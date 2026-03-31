@@ -3,6 +3,7 @@ import type { TranslationType } from '../../shared/contracts'
 const PASSWORD_STORAGE_KEY = 'aniflow:password'
 const PREFERRED_TRANSLATION_STORAGE_KEY = 'aniflow:preferred-translation'
 const ANILIST_TOKEN_STORAGE_KEY = 'aniflow:anilist-token'
+const AUTO_NEXT_STORAGE_KEY = 'aniflow:auto-next'
 
 export function readStoredPassword(): string {
   return window.localStorage.getItem(PASSWORD_STORAGE_KEY) ?? ''
@@ -27,6 +28,15 @@ export function readStoredAniListToken(): string {
 
 export function writeStoredAniListToken(value: string): void {
   window.localStorage.setItem(ANILIST_TOKEN_STORAGE_KEY, value)
+}
+
+export function readStoredAutoNext(): boolean {
+  const value = window.localStorage.getItem(AUTO_NEXT_STORAGE_KEY)
+  return value === null ? true : value !== 'false'
+}
+
+export function writeStoredAutoNext(value: boolean): void {
+  window.localStorage.setItem(AUTO_NEXT_STORAGE_KEY, String(value))
 }
 
 export function isTranslationType(value: string | null | undefined): value is TranslationType {

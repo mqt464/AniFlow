@@ -802,6 +802,11 @@ export class AniFlowDatabase {
       .run(status)
   }
 
+  clearAniListConnection(): void {
+    this.connection.prepare('DELETE FROM anilist_connection WHERE id = 1').run()
+    this.connection.prepare('DELETE FROM anilist_queue').run()
+  }
+
   enqueueAniListSync(action: string, payload: unknown): void {
     const timestamp = nowIso()
     this.connection

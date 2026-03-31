@@ -10,9 +10,30 @@ import { useSession } from '../session'
 type TokenState = 'idle' | 'checking' | 'valid' | 'invalid'
 
 const PIN_REDIRECT_URL = 'https://anilist.co/api/v2/oauth/pin'
+const ANILIST_SYNC_FEATURES = [
+  {
+    title: 'Currently watching',
+    detail: 'Keeps your active episode progress aligned with AniList current entries.',
+  },
+  {
+    title: 'Watch later',
+    detail: 'Pushes queued shows to AniList as planning entries.',
+  },
+  {
+    title: 'Completed',
+    detail: 'Marks finished anime as completed on AniList.',
+  },
+] as const
 
 export function SettingsPage() {
-  const { password, setPassword, preferredTranslationType, setPreferredTranslationType } = useSession()
+  const {
+    password,
+    setPassword,
+    preferredTranslationType,
+    setPreferredTranslationType,
+    autoNextEnabled,
+    setAutoNextEnabled,
+  } = useSession()
   const [searchParams, setSearchParams] = useSearchParams()
   const [token, setToken] = useState(readStoredAniListToken)
   const [connection, setConnection] = useState<AniListConnection | null>(null)
@@ -135,6 +156,24 @@ export function SettingsPage() {
     }
   }
 
+  const disconnect = async () => {
+    try {
+      setSyncing(true)
+      setError(null)
+      const result = await createApi(password).disconnectAniList()
+      setConnection(result.connection)
+      setStatus('AniList disconnected')
+      setToken('')
+      setTokenState('idle')
+      setTokenMessage(null)
+      writeStoredAniListToken('')
+    } catch (reason: unknown) {
+      setError(reason instanceof ApiError ? reason.message : 'Unable to disconnect AniList right now')
+    } finally {
+      setSyncing(false)
+    }
+  }
+
   return (
     <section className="page page-narrow settings-page">
       <header className="page-header settings-page-header">
@@ -165,6 +204,27 @@ export function SettingsPage() {
                 onClick={() => setPreferredTranslationType(mode)}
               >
                 {mode === 'sub' ? 'Sub' : 'Dub'}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="settings-row">
+          <label className="settings-label-block">
+            <span>Auto next</span>
+            <span className="form-hint">Automatically start the next episode when playback ends.</span>
+          </label>
+
+          <div className="settings-segmented" role="group" aria-label="Auto next">
+            {[true, false].map((enabled) => (
+              <button
+                key={enabled ? 'on' : 'off'}
+                aria-pressed={autoNextEnabled === enabled}
+                className={autoNextEnabled === enabled ? 'active' : ''}
+                type="button"
+                onClick={() => setAutoNextEnabled(enabled)}
+              >
+                {enabled ? 'On' : 'Off'}
               </button>
             ))}
           </div>
@@ -258,6 +318,10 @@ export function SettingsPage() {
                 {syncing ? 'Syncing...' : 'Sync now'}
               </button>
 
+              <button className="secondary-button" disabled={syncing} type="button" onClick={() => void disconnect()}>
+                Disconnect
+              </button>
+
               {connection.profileUrl ? (
                 <a className="secondary-button" href={connection.profileUrl} rel="noreferrer" target="_blank">
                   <ExternalLink size={16} strokeWidth={1.9} />
@@ -268,8 +332,21 @@ export function SettingsPage() {
           </div>
         ) : null}
 
+        <div className="settings-anilist-scope" aria-label="AniList sync features">
+          {ANILIST_SYNC_FEATURES.map((feature) => (
+            <div className="settings-anilist-scope-item" key={feature.title}>
+              <strong>{feature.title}</strong>
+              <span>{feature.detail}</span>
+            </div>
+          ))}
+        </div>
+
         <div className="settings-anilist-instructions">
           <strong>Get a token</strong>
+          <p className="form-hint">
+            AniFlow syncs currently watching progress, <span className="settings-inline-code">Watch later</span>, and{' '}
+            <span className="settings-inline-code">Completed</span> with AniList.
+          </p>
           <ol className="settings-steps">
             <li>
               Sign in and open <a href="https://anilist.co/settings/developer" rel="noreferrer" target="_blank">AniList Developer Settings</a>.

@@ -1738,6 +1738,26 @@ input::placeholder {
   white-space: pre-line;
 }
 
+.settings-anilist-scope {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.settings-anilist-scope-item {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.settings-anilist-scope-item span {
+  color: var(--text-muted);
+  font-size: 0.84rem;
+}
+
 .settings-anilist-instructions a,
 .settings-inline-note a {
   color: #ffafcb;
@@ -3204,6 +3224,10 @@ input::placeholder {
   }
 
   .settings-anilist-profile {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-anilist-scope {
     grid-template-columns: 1fr;
   }
 

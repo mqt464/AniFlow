@@ -131,15 +131,10 @@ export function HomePage() {
   const watchLater = data?.watchLater ?? EMPTY_LIBRARY
   const completed = data?.completed ?? EMPTY_LIBRARY
   const recentProgress = data?.recentProgress ?? EMPTY_PROGRESS
-  const favorites = data?.favorites ?? EMPTY_LIBRARY
   const discover = data?.discover ?? EMPTY_DISCOVER
 
   const libraryByShowId = useMemo(() => {
     const map = new Map<string, LibraryEntry>()
-
-    for (const entry of favorites) {
-      map.set(entry.showId, entry)
-    }
 
     for (const entry of watchLater) {
       map.set(entry.showId, entry)
@@ -154,7 +149,7 @@ export function HomePage() {
     }
 
     return map
-  }, [completed, continueWatching, favorites, watchLater])
+  }, [completed, continueWatching, watchLater])
 
   const recentByShowId = useMemo(() => {
     const map = new Map<string, WatchProgress>()
@@ -176,10 +171,6 @@ export function HomePage() {
       uniqueTitles.set(entry.showId, { showId: entry.showId, title: entry.title })
     }
 
-    for (const entry of favorites) {
-      uniqueTitles.set(entry.showId, { showId: entry.showId, title: entry.title })
-    }
-
     for (const entry of watchLater) {
       uniqueTitles.set(entry.showId, { showId: entry.showId, title: entry.title })
     }
@@ -193,7 +184,7 @@ export function HomePage() {
     }
 
     return Array.from(uniqueTitles.values())
-  }, [completed, continueWatching, favorites, recentByShowId, watchLater])
+  }, [completed, continueWatching, recentByShowId, watchLater])
 
   useEffect(() => {
     if (!metadataRequests.length) {
@@ -308,19 +299,6 @@ export function HomePage() {
     } satisfies RailItem
   })
 
-  const favoriteItems = favorites.map((entry) => {
-    const metadata = metadataByShowId[entry.showId]
-    return {
-      id: entry.showId,
-      showId: entry.showId,
-      href: resolveShowHref(entry.showId, libraryByShowId, recentByShowId, preferredTranslationType),
-      title: metadata?.title ?? entry.title,
-      posterUrl: entry.posterUrl ?? metadata?.posterUrl ?? metadata?.bannerUrl ?? null,
-      rating: metadata?.score ?? null,
-      libraryEntry: entry,
-    } satisfies RailItem
-  })
-
   const completedItems = completed.map((entry) => {
     const metadata = metadataByShowId[entry.showId]
     return {
@@ -331,23 +309,6 @@ export function HomePage() {
       posterUrl: entry.posterUrl ?? metadata?.posterUrl ?? metadata?.bannerUrl ?? null,
       rating: metadata?.score ?? null,
       libraryEntry: entry,
-    } satisfies RailItem
-  })
-
-  const recentItems = Array.from(recentByShowId.values()).map((item) => {
-    const libraryEntry = libraryByShowId.get(item.showId)
-    const metadata = metadataByShowId[item.showId]
-
-    return {
-      id: item.showId,
-      showId: item.showId,
-      href: libraryEntry
-        ? withMode(`/player/${item.showId}/${getResumeSnapshot(libraryEntry, recentProgress).episodeNumber}`, preferredTranslationType)
-        : withMode(`/player/${item.showId}/${item.episodeNumber}`, preferredTranslationType),
-      title: metadata?.title ?? item.title,
-      posterUrl: libraryEntry?.posterUrl ?? item.posterUrl ?? metadata?.posterUrl ?? metadata?.bannerUrl ?? null,
-      rating: metadata?.score ?? null,
-      progressPercent: libraryEntry ? getResumeSnapshot(libraryEntry, recentProgress).progressPercent : undefined,
     } satisfies RailItem
   })
 
@@ -504,16 +465,6 @@ export function HomePage() {
         onItemContextMenu={handleItemContextMenu}
         title="Upcoming next season"
       />
-
-      {isInitialLoading || favoriteItems.length ? (
-        <PosterRail
-          emptyMessage="This row will fill in after you save a show."
-          items={favoriteItems}
-          loading={isInitialLoading}
-          onItemContextMenu={handleItemContextMenu}
-          title="My list"
-        />
-      ) : null}
 
       {isInitialLoading || completedItems.length ? (
         <PosterRail
@@ -934,15 +885,6 @@ function buildContextMenuActions(item: RailItem): ContextMenuAction[] {
       },
     })
   }
-
-  actions.push({
-    key: item.libraryEntry?.favorited ? 'remove-favorites' : 'add-favorites',
-    label: item.libraryEntry?.favorited ? 'Remove from my list' : 'Add to my list',
-    update: {
-      ...baseUpdate,
-      favorited: !item.libraryEntry?.favorited,
-    },
-  })
 
   actions.push({
     key: item.libraryEntry?.completed ? 'unmark-complete' : 'mark-complete',

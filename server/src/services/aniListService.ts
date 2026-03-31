@@ -256,6 +256,11 @@ export class AniListService {
     return this.getPublicConnection()
   }
 
+  disconnect(): AniListConnection {
+    this.database.clearAniListConnection()
+    return this.getPublicConnection()
+  }
+
   private async runBackgroundSync(): Promise<void> {
     if (this.syncing) {
       return

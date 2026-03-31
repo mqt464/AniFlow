@@ -5,8 +5,10 @@ import { BrowserRouter, Link, NavLink, Outlet, Route, Routes, useLocation } from
 import { GlobalSearch } from './components/GlobalSearch'
 import type { AniListConnection } from '../shared/contracts'
 import {
+  readStoredAutoNext,
   readStoredPassword,
   readStoredPreferredTranslation,
+  writeStoredAutoNext,
   writeStoredPassword,
   writeStoredPreferredTranslation,
 } from './lib/appPreferences'
@@ -67,7 +69,6 @@ function ProfileMenu() {
     watching: 0,
     watchLater: 0,
     completed: 0,
-    favorites: 0,
   })
   const containerRef = useRef<HTMLDivElement | null>(null)
 
@@ -88,7 +89,6 @@ function ProfileMenu() {
           watching: payload.continueWatching.length,
           watchLater: payload.watchLater.length,
           completed: payload.completed.length,
-          favorites: payload.favorites.length,
         })
       })
       .catch(() => {
@@ -101,7 +101,6 @@ function ProfileMenu() {
           watching: 0,
           watchLater: 0,
           completed: 0,
-          favorites: 0,
         })
       })
       .finally(() => {
@@ -188,10 +187,6 @@ function ProfileMenu() {
               <span>Completed</span>
               <strong>{loading ? '...' : libraryStats.completed}</strong>
             </div>
-            <div className="profile-stat">
-              <span>My list</span>
-              <strong>{loading ? '...' : libraryStats.favorites}</strong>
-            </div>
           </div>
 
           {connection?.connected && connection.profileUrl ? (
@@ -273,6 +268,7 @@ function RouteLoadingFallback() {
 export function App() {
   const [password, setPasswordState] = useState(readStoredPassword)
   const [preferredTranslationType, setPreferredTranslationTypeState] = useState(readStoredPreferredTranslation)
+  const [autoNextEnabled, setAutoNextEnabledState] = useState(readStoredAutoNext)
 
   const value: SessionContextValue = {
     password,
@@ -284,6 +280,11 @@ export function App() {
     setPreferredTranslationType: (nextValue) => {
       setPreferredTranslationTypeState(nextValue)
       writeStoredPreferredTranslation(nextValue)
+    },
+    autoNextEnabled,
+    setAutoNextEnabled: (nextValue) => {
+      setAutoNextEnabledState(nextValue)
+      writeStoredAutoNext(nextValue)
     },
   }
 

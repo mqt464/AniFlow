@@ -115,5 +115,11 @@ export function createApi(password?: string | null) {
         { method: 'POST', body: JSON.stringify({}) },
         password,
       ),
+    disconnectAniList: () =>
+      request<{ connection: AniListConnection }>(
+        '/api/integrations/anilist/disconnect',
+        { method: 'POST', body: JSON.stringify({}) },
+        password,
+      ),
   }
 }

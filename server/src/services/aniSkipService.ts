@@ -9,15 +9,27 @@ interface AniSkipSearchResponse {
   }
 }
 
+interface AniSkipEpisode {
+  id: string
+  number?: string | null
+  name?: string | null
+  baseDuration?: number | null
+}
+
 interface AniSkipEpisodesResponse {
   data?: {
-    findEpisodesByShowId?: Array<{ id: string; number?: string | null; name?: string | null; baseDuration?: number | null }>
+    findEpisodesByShowId?: AniSkipEpisode[]
   }
+}
+
+interface AniSkipTimestamp {
+  at: number
+  type: { name: string }
 }
 
 interface AniSkipTimestampsResponse {
   data?: {
-    findTimestampsByEpisodeId?: Array<{ at: number; type: { name: string } }>
+    findTimestampsByEpisodeId?: AniSkipTimestamp[]
   }
 }
 
@@ -28,73 +40,46 @@ export class AniSkipService {
   ) {}
 
   async getSegments(showTitle: string, episodeNumber: string, fallbackDuration: number | null): Promise<SkipSegment[]> {
-    const cacheKey = `aniskip:${normalizeTitle(showTitle)}:${episodeNumber}`
+    const cacheKey = `aniskip:v2:${normalizeTitle(showTitle)}:${episodeNumber}`
     const cached = this.database.getCachedJson<SkipSegment[]>(cacheKey)
     if (cached) {
       return cached
     }
 
-    const showId = await this.findShowId(showTitle)
-    if (!showId) {
-      return []
-    }
+    const showIds = await this.findShowIds(showTitle)
+    let bestSegments: SkipSegment[] = []
+    let bestScore = -1
 
-    const episodes = await this.query<AniSkipEpisodesResponse>(
-      `query ($showId: ID!) {
-        findEpisodesByShowId(showId: $showId) {
-          id
-          number
-          name
-          baseDuration
+    for (const showId of showIds) {
+      const episodes = await this.getEpisodes(showId)
+      const matches = this.rankEpisodeCandidates(episodes, episodeNumber)
+
+      for (const episode of matches.slice(0, 6)) {
+        const timestamps = await this.getTimestamps(episode.id)
+        const totalDuration = fallbackDuration ?? episode.baseDuration ?? 0
+        const segments = this.buildSegments(timestamps, totalDuration)
+        const score = this.scoreSegments(segments, totalDuration)
+
+        if (score > bestScore) {
+          bestSegments = segments
+          bestScore = score
         }
-      }`,
-      { showId },
-    )
 
-    const episode = episodes.data?.findEpisodesByShowId?.find((entry) => entry.number === episodeNumber || entry.name === episodeNumber)
-    if (!episode?.id) {
-      return []
-    }
-
-    const timestamps = await this.query<AniSkipTimestampsResponse>(
-      `query ($episodeId: ID!) {
-        findTimestampsByEpisodeId(episodeId: $episodeId) {
-          at
-          type {
-            name
-          }
+        if (score >= 10) {
+          break
         }
-      }`,
-      { episodeId: episode.id },
-    )
-
-    const ordered = [...(timestamps.data?.findTimestampsByEpisodeId ?? [])].sort((left, right) => left.at - right.at)
-    const totalDuration = fallbackDuration ?? episode.baseDuration ?? 0
-    const segments: SkipSegment[] = []
-
-    for (let index = 0; index < ordered.length; index += 1) {
-      const current = ordered[index]
-      const next = ordered[index + 1]
-      const label = this.mapTimestampType(current.type.name)
-      if (!label) {
-        continue
       }
 
-      const endTime = next?.at ?? totalDuration
-      if (endTime > current.at) {
-        segments.push({
-          label,
-          startTime: current.at,
-          endTime,
-        })
+      if (bestScore >= 10) {
+        break
       }
     }
 
-    this.database.setCachedJson(cacheKey, segments, 1000 * 60 * 60 * 24)
-    return segments
+    this.database.setCachedJson(cacheKey, bestSegments, 1000 * 60 * 60 * 24)
+    return bestSegments
   }
 
-  private async findShowId(showTitle: string): Promise<string | null> {
+  private async findShowIds(showTitle: string): Promise<string[]> {
     const response = await this.query<AniSkipSearchResponse>(
       `query ($search: String!, $limit: Int) {
         searchShows(search: $search, limit: $limit) {
@@ -108,7 +93,7 @@ export class AniSkipService {
 
     const normalizedQuery = normalizeTitle(showTitle)
     const candidates = response.data?.searchShows ?? []
-    const best = candidates
+    return candidates
       .map((candidate) => {
         const normalizedCandidate = normalizeTitle(candidate.name)
         let score = 0
@@ -123,23 +108,170 @@ export class AniSkipService {
         }
         return { id: candidate.id, score }
       })
-      .sort((left, right) => right.score - left.score)[0]
-
-    return best && best.score > 0 ? best.id : null
+      .filter((candidate) => candidate.score > 0)
+      .sort((left, right) => right.score - left.score)
+      .map((candidate) => candidate.id)
   }
 
-  private mapTimestampType(name: string): string | null {
+  private async getEpisodes(showId: string): Promise<AniSkipEpisode[]> {
+    const response = await this.query<AniSkipEpisodesResponse>(
+      `query ($showId: ID!) {
+        findEpisodesByShowId(showId: $showId) {
+          id
+          number
+          name
+          baseDuration
+        }
+      }`,
+      { showId },
+    )
+
+    return response.data?.findEpisodesByShowId ?? []
+  }
+
+  private async getTimestamps(episodeId: string): Promise<AniSkipTimestamp[]> {
+    const response = await this.query<AniSkipTimestampsResponse>(
+      `query ($episodeId: ID!) {
+        findTimestampsByEpisodeId(episodeId: $episodeId) {
+          at
+          type {
+            name
+          }
+        }
+      }`,
+      { episodeId },
+    )
+
+    return response.data?.findTimestampsByEpisodeId ?? []
+  }
+
+  private rankEpisodeCandidates(episodes: AniSkipEpisode[], episodeNumber: string): AniSkipEpisode[] {
+    const normalizedEpisodeNumber = normalizeTitle(episodeNumber)
+    return episodes
+      .filter((episode) => episode.number === episodeNumber || episode.name === episodeNumber)
+      .map((episode) => {
+        let score = 0
+        if (episode.number === episodeNumber) {
+          score += 4
+        }
+        if ((episode.name ?? '').trim() && normalizeTitle(episode.name ?? '') !== normalizedEpisodeNumber) {
+          score += 1
+        }
+        if (episode.baseDuration && episode.baseDuration > 300) {
+          score += 1
+        }
+        return { episode, score }
+      })
+      .sort((left, right) => right.score - left.score)
+      .map(({ episode }) => episode)
+  }
+
+  private mapTimestampType(name: string | null | undefined): string | null {
+    if (!name) {
+      return null
+    }
+
     const value = name.toLowerCase()
     if (value.includes('intro')) {
       return 'Skip intro'
     }
-    if (value.includes('credits') || value.includes('outro')) {
-      return 'Skip credits'
+    if (value.includes('credits') || value.includes('outro') || value.includes('ending') || value.includes('preview')) {
+      return 'Skip outro'
     }
     if (value.includes('recap')) {
       return 'Skip recap'
     }
     return null
+  }
+
+  private buildSegments(timestamps: AniSkipTimestamp[], totalDuration: number): SkipSegment[] {
+    const ordered = [...timestamps].sort((left, right) => left.at - right.at)
+    const segments: SkipSegment[] = []
+
+    for (let index = 0; index < ordered.length; index += 1) {
+      const current = ordered[index]
+      const label = this.mapTimestampType(current.type.name)
+      if (!label) {
+        continue
+      }
+
+      const previousLabel = index > 0 ? this.mapTimestampType(ordered[index - 1].type.name) : null
+      if (previousLabel === label) {
+        continue
+      }
+
+      let endIndex = index + 1
+      while (endIndex < ordered.length && this.mapTimestampType(ordered[endIndex].type.name) === label) {
+        endIndex += 1
+      }
+
+      const rawEndTime = ordered[endIndex]?.at ?? (label === 'Skip outro' && totalDuration > 0 ? totalDuration : null)
+      if (rawEndTime === null) {
+        continue
+      }
+
+      const endTime = totalDuration > 0 ? Math.min(rawEndTime, totalDuration) : rawEndTime
+      if (endTime <= current.at) {
+        continue
+      }
+
+      segments.push({
+        label,
+        startTime: current.at,
+        endTime,
+      })
+    }
+
+    return segments
+  }
+
+  private scoreSegments(segments: SkipSegment[], totalDuration: number): number {
+    if (segments.length === 0) {
+      return 0
+    }
+
+    let score = segments.length * 3
+    for (const segment of segments) {
+      const segmentDuration = segment.endTime - segment.startTime
+
+      if (segment.label === 'Skip intro') {
+        if (segment.startTime <= 180) {
+          score += 2
+        }
+        if (segmentDuration <= 240) {
+          score += 2
+        }
+        if (totalDuration > 0 && segmentDuration > Math.max(360, totalDuration * 0.45)) {
+          score -= 6
+        }
+      }
+
+      if (segment.label === 'Skip recap') {
+        if (segment.startTime <= 300) {
+          score += 1
+        }
+        if (segmentDuration <= 240) {
+          score += 1
+        }
+        if (totalDuration > 0 && segmentDuration > Math.max(420, totalDuration * 0.5)) {
+          score -= 5
+        }
+      }
+
+      if (segment.label === 'Skip outro') {
+        if (totalDuration > 0 && segment.startTime >= totalDuration * 0.5) {
+          score += 2
+        }
+        if (segmentDuration <= 360) {
+          score += 1
+        }
+        if (totalDuration > 0 && segment.startTime < totalDuration * 0.35) {
+          score -= 5
+        }
+      }
+    }
+
+    return score
   }
 
   private async query<T>(query: string, variables: Record<string, unknown>): Promise<T> {

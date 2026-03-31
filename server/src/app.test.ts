@@ -341,6 +341,53 @@ describe('app api', () => {
     await app.close()
   })
 
+  it('disconnects AniList and clears pending sync jobs', async () => {
+    const env = createEnv()
+    const database = new AniFlowDatabase(env.dbPath)
+    database.setAniListConnection({
+      viewerId: 7,
+      username: 'mat',
+      avatarUrl: null,
+      bannerUrl: null,
+      profileUrl: 'https://anilist.co/user/mat',
+      about: null,
+      accessToken: 'token',
+      refreshToken: null,
+      lastPullAt: null,
+      lastSyncStatus: 'Connected',
+    })
+    database.enqueueAniListSync('state', { showId: 'demo-show' })
+    database.close()
+
+    const app = buildApp(env)
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/integrations/anilist/disconnect',
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toEqual({
+      connection: {
+        connected: false,
+        username: null,
+        avatarUrl: null,
+        bannerUrl: null,
+        profileUrl: null,
+        about: null,
+        connectedAt: null,
+        lastPullAt: null,
+        lastSyncStatus: null,
+      },
+    })
+
+    const reopened = new AniFlowDatabase(env.dbPath)
+    expect(reopened.getAniListConnection()).toBeNull()
+    expect(reopened.takePendingAniListJobs()).toEqual([])
+    reopened.close()
+
+    await app.close()
+  })
+
   it('stores playback progress', async () => {
     const app = buildApp(createEnv())
 

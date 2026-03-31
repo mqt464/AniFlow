@@ -7,6 +7,8 @@ export interface SessionContextValue {
   setPassword: (value: string) => void
   preferredTranslationType: TranslationType
   setPreferredTranslationType: (value: TranslationType) => void
+  autoNextEnabled: boolean
+  setAutoNextEnabled: (value: boolean) => void
 }
 
 export const SessionContext = createContext<SessionContextValue | null>(null)

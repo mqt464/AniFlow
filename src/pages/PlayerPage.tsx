@@ -30,7 +30,7 @@ const BACKGROUND_REQUEST_COOLDOWN_MS = 30_000
 
 export function PlayerPage() {
   const { showId = '', episodeNumber = '' } = useParams()
-  const { password, preferredTranslationType } = useSession()
+  const { password, preferredTranslationType, autoNextEnabled, setAutoNextEnabled } = useSession()
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const playerRef = useRef<HTMLDivElement | null>(null)
@@ -324,6 +324,10 @@ export function PlayerPage() {
           completed: true,
         }))
       }
+
+      if (autoNextEnabled && stream.nextEpisodeNumber) {
+        navigate(`/player/${showId}/${stream.nextEpisodeNumber}?mode=${translationType}`)
+      }
     }
 
     const onPlay = () => {
@@ -393,7 +397,7 @@ export function PlayerPage() {
       video.removeEventListener('enterpictureinpicture', onEnterPictureInPicture)
       video.removeEventListener('leavepictureinpicture', onLeavePictureInPicture)
     }
-  }, [episodeNumber, finishesShow, password, showId, showPage?.show.posterUrl, stream])
+  }, [autoNextEnabled, episodeNumber, finishesShow, navigate, password, showId, showPage?.show.posterUrl, stream, translationType])
 
   useEffect(() => {
     const video = videoRef.current
@@ -415,14 +419,20 @@ export function PlayerPage() {
       setAvailableTextTrackCount(textTracks.length)
       syncTextTrack(video, captionsEnabled)
     }
+    const canListenForTrackChanges =
+      typeof textTracks.addEventListener === 'function' && typeof textTracks.removeEventListener === 'function'
 
     syncAvailability()
-    textTracks.addEventListener('addtrack', syncAvailability)
-    textTracks.addEventListener('removetrack', syncAvailability)
+    if (canListenForTrackChanges) {
+      textTracks.addEventListener('addtrack', syncAvailability)
+      textTracks.addEventListener('removetrack', syncAvailability)
+    }
 
     return () => {
-      textTracks.removeEventListener('addtrack', syncAvailability)
-      textTracks.removeEventListener('removetrack', syncAvailability)
+      if (canListenForTrackChanges) {
+        textTracks.removeEventListener('addtrack', syncAvailability)
+        textTracks.removeEventListener('removetrack', syncAvailability)
+      }
     }
   }, [activeQuality?.proxyUrl, captionsEnabled, stream])
 
@@ -700,6 +710,11 @@ export function PlayerPage() {
   const toggleEpisodePicker = () => {
     setSettingsOpen(false)
     setEpisodePickerOpen((previous) => !previous)
+    handlePointerActivity()
+  }
+
+  const toggleAutoNext = () => {
+    setAutoNextEnabled(!autoNextEnabled)
     handlePointerActivity()
   }
 
@@ -1024,6 +1039,18 @@ export function PlayerPage() {
 
                       <div className="player-settings-section">
                         <span className="player-settings-label">Display</span>
+                        <button
+                          aria-pressed={autoNextEnabled}
+                          className={`player-settings-row ${autoNextEnabled ? 'active' : ''}`}
+                          type="button"
+                          onClick={toggleAutoNext}
+                        >
+                          <span className="player-settings-row-main">
+                            <SkipForward size={16} strokeWidth={1.8} />
+                            Auto next
+                          </span>
+                          <span>{autoNextEnabled ? 'On' : 'Off'}</span>
+                        </button>
                         <button
                           aria-pressed={isInPictureInPicture}
                           className={`player-settings-row ${isInPictureInPicture ? 'active' : ''}`}

@@ -246,32 +246,7 @@ export function ShowPage() {
               ) : null}
 
               <button
-                className={libraryEntry?.favorited ? 'secondary-button' : 'primary-button'}
-                disabled={libraryButtonsDisabled}
-                type="button"
-                onClick={() =>
-                  baseLibraryUpdate
-                    ? void runLibraryAction('favorite', {
-                        ...baseLibraryUpdate,
-                        favorited: !libraryEntry?.favorited,
-                      })
-                    : undefined
-                }
-              >
-                {libraryAction === 'favorite' ? (
-                  <>
-                    <LoaderCircle className="spin" size={16} strokeWidth={2} />
-                    Saving...
-                  </>
-                ) : libraryEntry?.favorited ? (
-                  'Remove from my list'
-                ) : (
-                  'Add to my list'
-                )}
-              </button>
-
-              <button
-                className="secondary-button"
+                className={libraryEntry?.watchLater ? 'secondary-button' : 'primary-button'}
                 disabled={libraryButtonsDisabled}
                 type="button"
                 onClick={() =>

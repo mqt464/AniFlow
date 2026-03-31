@@ -296,6 +296,10 @@ export function buildApp(env: AppEnv) {
     connection: await aniList.syncNow(),
   }))
 
+  app.post('/api/integrations/anilist/disconnect', async () => ({
+    connection: aniList.disconnect(),
+  }))
+
   app.get('/', async (_request, reply) => serveFrontendRequest('', reply, env))
   app.get('/*', async (request, reply) => {
     const requestPath = (request.params as { '*': string })['*'] ?? ''
