@@ -12,7 +12,7 @@
     "build:server": "tsc -p tsconfig.server.json",
     "lint": "eslint .",
     "preview": "vite preview --host 0.0.0.0",
-    "start": "node --env-file-if-exists=.env server/dist/index.js",
+    "start": "node --env-file-if-exists=.env server/dist/server/src/index.js",
     "test": "vitest run",
     "test:watch": "vitest"
   },

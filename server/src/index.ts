@@ -7,6 +7,6 @@ const app = buildApp(env)
 try {
   await app.listen({ host: env.host, port: env.port })
 } catch (error) {
-  app.log.error(error)
+  console.error(error)
   process.exit(1)
 }
