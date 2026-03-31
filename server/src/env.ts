@@ -17,11 +17,14 @@ export interface AppEnv {
 
 export function loadEnv(): AppEnv {
   const dataDir = process.env.ANIFLOW_DATA_DIR ?? path.resolve(process.cwd(), 'server/data')
+  const port = Number(process.env.ANIFLOW_PORT ?? 8787)
+  const frontendPort = Number(process.env.ANIFLOW_WEB_PORT ?? 4173)
+  const frontendUrl = process.env.ANIFLOW_FRONTEND_URL?.trim() || `http://localhost:${frontendPort}`
 
   return {
     host: process.env.ANIFLOW_HOST ?? '0.0.0.0',
-    port: Number(process.env.ANIFLOW_PORT ?? 8787),
-    frontendUrl: process.env.ANIFLOW_FRONTEND_URL ?? 'http://localhost:4173',
+    port,
+    frontendUrl,
     appPassword: process.env.ANIFLOW_APP_PASSWORD?.trim() || null,
     dataDir,
     dbPath: process.env.ANIFLOW_DB_PATH ?? path.join(dataDir, 'aniflow.sqlite'),
@@ -30,7 +33,8 @@ export function loadEnv(): AppEnv {
     aniListClientId: process.env.ANILIST_CLIENT_ID?.trim() || null,
     aniListClientSecret: process.env.ANILIST_CLIENT_SECRET?.trim() || null,
     aniListRedirectUri:
-      process.env.ANILIST_REDIRECT_URI?.trim() || 'http://localhost:8787/api/integrations/anilist/callback',
+      process.env.ANILIST_REDIRECT_URI?.trim() ||
+      `http://localhost:${port}/api/integrations/anilist/callback`,
     cacheTtlMs: Number(process.env.ANIFLOW_CACHE_TTL_MS ?? 1000 * 60 * 60 * 6),
   }
 }

@@ -12,11 +12,13 @@ AniFlow is a self-hosted LAN anime site built as a React frontend plus a Fastify
 
 ```bash
 npm install
+cp .env.example .env
 npm run dev
 ```
 
 - Frontend: `http://localhost:4173`
 - Backend: `http://localhost:8787`
+- Change local ports in `.env` with `ANIFLOW_WEB_PORT` and `ANIFLOW_PORT`
 
 ## Production On The LAN
 
