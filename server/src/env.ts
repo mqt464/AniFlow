@@ -4,6 +4,7 @@ export interface AppEnv {
   host: string
   port: number
   frontendUrl: string
+  frontendDistDir: string
   appPassword: string | null
   dataDir: string
   dbPath: string
@@ -25,6 +26,7 @@ export function loadEnv(): AppEnv {
     host: process.env.ANIFLOW_HOST ?? '0.0.0.0',
     port,
     frontendUrl,
+    frontendDistDir: path.resolve(process.cwd(), 'dist'),
     appPassword: process.env.ANIFLOW_APP_PASSWORD?.trim() || null,
     dataDir,
     dbPath: process.env.ANIFLOW_DB_PATH ?? path.join(dataDir, 'aniflow.sqlite'),

@@ -6,6 +6,7 @@ const app = buildApp(env)
 
 try {
   await app.listen({ host: env.host, port: env.port })
+  console.log(`AniFlow listening on http://localhost:${env.port}`)
 } catch (error) {
   console.error(error)
   process.exit(1)

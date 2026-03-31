@@ -217,6 +217,7 @@ function createEnv(): AppEnv {
     host: '127.0.0.1',
     port: 0,
     frontendUrl: 'http://localhost:4173',
+    frontendDistDir: path.join(dir, 'dist'),
     appPassword: null,
     dataDir: dir,
     dbPath: path.join(dir, 'test.sqlite'),
@@ -497,6 +498,32 @@ describe('app api', () => {
       season: 'SPRING',
       year: 2025,
     })
+
+    await app.close()
+  })
+
+  it('serves the built frontend and preserves api 404s', async () => {
+    const env = createEnv()
+    fs.mkdirSync(path.join(env.frontendDistDir, 'assets'), { recursive: true })
+    fs.writeFileSync(path.join(env.frontendDistDir, 'index.html'), '<!doctype html><div id="root"></div>')
+    fs.writeFileSync(path.join(env.frontendDistDir, 'assets', 'app.js'), 'console.log("ok")')
+
+    const app = buildApp(env)
+
+    const rootResponse = await app.inject({ method: 'GET', url: '/' })
+    expect(rootResponse.statusCode).toBe(200)
+    expect(rootResponse.headers['content-type']).toContain('text/html')
+
+    const assetResponse = await app.inject({ method: 'GET', url: '/assets/app.js' })
+    expect(assetResponse.statusCode).toBe(200)
+    expect(assetResponse.headers['content-type']).toContain('text/javascript')
+
+    const spaResponse = await app.inject({ method: 'GET', url: '/settings' })
+    expect(spaResponse.statusCode).toBe(200)
+    expect(spaResponse.headers['content-type']).toContain('text/html')
+
+    const apiResponse = await app.inject({ method: 'GET', url: '/api/missing' })
+    expect(apiResponse.statusCode).toBe(404)
 
     await app.close()
   })

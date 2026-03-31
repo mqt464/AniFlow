@@ -1,3 +1,5 @@
+import fs from 'node:fs/promises'
+import path from 'node:path'
 import { Readable } from 'node:stream'
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
@@ -294,7 +296,44 @@ export function buildApp(env: AppEnv) {
     connection: await aniList.syncNow(),
   }))
 
+  app.get('/', async (_request, reply) => serveFrontendRequest('', reply, env))
+  app.get('/*', async (request, reply) => {
+    const requestPath = (request.params as { '*': string })['*'] ?? ''
+    if (requestPath.startsWith('api/')) {
+      return reply.code(404).send({ message: 'Not found' })
+    }
+
+    return serveFrontendRequest(requestPath, reply, env)
+  })
+
   return app
+}
+
+async function serveFrontendRequest(requestPath: string, reply: ReturnType<typeof Fastify>['reply'], env: AppEnv) {
+  const distDir = path.resolve(env.frontendDistDir)
+  const indexPath = path.join(distDir, 'index.html')
+  const normalizedPath = requestPath.replace(/^\/+/, '')
+  const candidatePath = path.resolve(distDir, normalizedPath || 'index.html')
+
+  if (candidatePath === distDir || candidatePath.startsWith(`${distDir}${path.sep}`)) {
+    const candidate = await readFileIfPresent(candidatePath)
+    if (candidate) {
+      return reply.type(getContentType(candidatePath)).send(candidate)
+    }
+  }
+
+  if (path.extname(normalizedPath)) {
+    return reply.code(404).send({ message: 'Static asset not found' })
+  }
+
+  const indexFile = await readFileIfPresent(indexPath)
+  if (!indexFile) {
+    return reply
+      .code(404)
+      .send({ message: 'Frontend build output was not found. Run `npm run build` before `npm start`.' })
+  }
+
+  return reply.type('text/html; charset=utf-8').send(indexFile)
 }
 
 function rewritePlaylist(
@@ -320,4 +359,45 @@ function rewritePlaylist(
       return `/api/playback/proxy/${session.id}`
     })
     .join('\n')
+}
+
+async function readFileIfPresent(filePath: string): Promise<Buffer | null> {
+  try {
+    const stats = await fs.stat(filePath)
+    if (!stats.isFile()) {
+      return null
+    }
+
+    return await fs.readFile(filePath)
+  } catch {
+    return null
+  }
+}
+
+function getContentType(filePath: string): string {
+  switch (path.extname(filePath).toLowerCase()) {
+    case '.css':
+      return 'text/css; charset=utf-8'
+    case '.html':
+      return 'text/html; charset=utf-8'
+    case '.ico':
+      return 'image/x-icon'
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg'
+    case '.js':
+      return 'text/javascript; charset=utf-8'
+    case '.json':
+      return 'application/json; charset=utf-8'
+    case '.png':
+      return 'image/png'
+    case '.svg':
+      return 'image/svg+xml'
+    case '.woff':
+      return 'font/woff'
+    case '.woff2':
+      return 'font/woff2'
+    default:
+      return 'application/octet-stream'
+  }
 }
