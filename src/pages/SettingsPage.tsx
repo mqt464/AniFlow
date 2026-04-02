@@ -33,6 +33,8 @@ export function SettingsPage() {
     setPreferredTranslationType,
     autoNextEnabled,
     setAutoNextEnabled,
+    autoSkipSegmentsEnabled,
+    setAutoSkipSegmentsEnabled,
   } = useSession()
   const [searchParams, setSearchParams] = useSearchParams()
   const [token, setToken] = useState(readStoredAniListToken)
@@ -223,6 +225,27 @@ export function SettingsPage() {
                 className={autoNextEnabled === enabled ? 'active' : ''}
                 type="button"
                 onClick={() => setAutoNextEnabled(enabled)}
+              >
+                {enabled ? 'On' : 'Off'}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="settings-row">
+          <label className="settings-label-block">
+            <span>Auto skip intros and outros</span>
+            <span className="form-hint">Skips AniSkip intro and outro segments after 3 seconds in the player.</span>
+          </label>
+
+          <div className="settings-segmented" role="group" aria-label="Auto skip intros and outros">
+            {[true, false].map((enabled) => (
+              <button
+                key={enabled ? 'on' : 'off'}
+                aria-pressed={autoSkipSegmentsEnabled === enabled}
+                className={autoSkipSegmentsEnabled === enabled ? 'active' : ''}
+                type="button"
+                onClick={() => setAutoSkipSegmentsEnabled(enabled)}
               >
                 {enabled ? 'On' : 'Off'}
               </button>

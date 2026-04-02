@@ -9,8 +9,33 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildApp } from './app.js'
 import type { AppEnv } from './env.js'
 import { AniFlowDatabase } from './lib/database.js'
+import { AniSkipService } from './services/aniSkipService.js'
+import { AllAnimeAdapter } from './services/provider/allAnimeAdapter.js'
 
 const tempDirs: string[] = []
+const subtitleFixture = `WEBVTT
+
+00:01:32.000 --> 00:01:34.000
+Hello there.
+
+00:01:36.000 --> 00:01:38.000
+We need to move.
+
+00:03:05.000 --> 00:03:07.000
+Now.
+
+00:03:09.000 --> 00:03:11.000
+Keep going.
+
+00:21:35.000 --> 00:21:38.000
+We made it.
+
+00:21:40.000 --> 00:21:43.000
+That should do it.
+
+00:22:10.000 --> 00:22:15.000
+See you next time.
+`
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -230,6 +255,10 @@ function createEnv(): AppEnv {
   }
 }
 
+function getRequestUrl(input: string | URL | Request): string {
+  return typeof input === 'string' ? input : input instanceof Request ? input.url : String(input)
+}
+
 describe('app api', () => {
   it('returns empty home payload on a clean database', async () => {
     const app = buildApp(createEnv())
@@ -412,6 +441,110 @@ describe('app api', () => {
       title: 'Demo Show',
       resumeEpisodeNumber: '1',
     })
+
+    await app.close()
+  })
+
+  it('falls back to subtitle-derived intro and outro markers when AniSkip has no match', async () => {
+    vi.spyOn(AllAnimeAdapter.prototype, 'resolvePlayback').mockResolvedValue({
+      url: 'https://media.example/video.m3u8',
+      mimeType: 'application/vnd.apple.mpegurl',
+      headers: { Referer: 'https://allmanga.to' },
+      subtitleUrl: 'https://media.example/subtitles.vtt',
+      subtitleMimeType: 'text/vtt',
+      qualityLabel: 'Auto',
+    })
+    vi.spyOn(AniSkipService.prototype, 'getSegments').mockResolvedValue([])
+
+    const fetchMock = vi.mocked(globalThis.fetch)
+    const originalFetch = fetchMock.getMockImplementation()
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = getRequestUrl(input as string | URL | Request)
+      if (url === 'https://media.example/subtitles.vtt') {
+        return new Response(subtitleFixture, {
+          status: 200,
+          headers: { 'Content-Type': 'text/vtt' },
+        })
+      }
+
+      if (!originalFetch) {
+        throw new Error(`Unexpected fetch in test: ${url}`)
+      }
+
+      return originalFetch(input, init)
+    })
+
+    const app = buildApp(createEnv())
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/playback/resolve',
+      payload: {
+        showId: 'demo-show',
+        episodeNumber: '1',
+        translationType: 'sub',
+      },
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toMatchObject({
+      showId: 'demo-show',
+      episodeNumber: '1',
+      skipSegments: [
+        { label: 'Skip intro', startTime: 0, endTime: 92 },
+        { label: 'Skip outro', startTime: 1303, endTime: 1335 },
+      ],
+    })
+
+    await app.close()
+  })
+
+  it('preserves AniSkip timings and only backfills missing labels from local detection', async () => {
+    vi.spyOn(AllAnimeAdapter.prototype, 'resolvePlayback').mockResolvedValue({
+      url: 'https://media.example/video.m3u8',
+      mimeType: 'application/vnd.apple.mpegurl',
+      headers: { Referer: 'https://allmanga.to' },
+      subtitleUrl: 'https://media.example/subtitles.vtt',
+      subtitleMimeType: 'text/vtt',
+      qualityLabel: 'Auto',
+    })
+    vi.spyOn(AniSkipService.prototype, 'getSegments').mockResolvedValue([
+      { label: 'Skip intro', startTime: 88, endTime: 179 },
+    ])
+
+    const fetchMock = vi.mocked(globalThis.fetch)
+    const originalFetch = fetchMock.getMockImplementation()
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = getRequestUrl(input as string | URL | Request)
+      if (url === 'https://media.example/subtitles.vtt') {
+        return new Response(subtitleFixture, {
+          status: 200,
+          headers: { 'Content-Type': 'text/vtt' },
+        })
+      }
+
+      if (!originalFetch) {
+        throw new Error(`Unexpected fetch in test: ${url}`)
+      }
+
+      return originalFetch(input, init)
+    })
+
+    const app = buildApp(createEnv())
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/playback/resolve',
+      payload: {
+        showId: 'demo-show',
+        episodeNumber: '1',
+        translationType: 'sub',
+      },
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.json().skipSegments).toEqual([
+      { label: 'Skip intro', startTime: 88, endTime: 179 },
+      { label: 'Skip outro', startTime: 1303, endTime: 1335 },
+    ])
 
     await app.close()
   })

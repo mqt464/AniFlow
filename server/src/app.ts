@@ -24,6 +24,7 @@ import { nowIso } from './lib/utils.js'
 import { AniListService } from './services/aniListService.js'
 import { AniSkipService } from './services/aniSkipService.js'
 import { JikanService } from './services/jikanService.js'
+import { LocalSkipService } from './services/localSkipService.js'
 import { AllAnimeAdapter } from './services/provider/allAnimeAdapter.js'
 import { ProxySessionStore } from './services/proxySessionStore.js'
 
@@ -64,6 +65,7 @@ export function buildApp(env: AppEnv) {
   const database = new AniFlowDatabase(env.dbPath)
   const provider = new AllAnimeAdapter(env, database)
   const aniSkip = new AniSkipService(env, database)
+  const localSkip = new LocalSkipService(database)
   const aniList = new AniListService(env, database, provider)
   const jikan = new JikanService(env, database)
   const proxySessions = new ProxySessionStore()
@@ -188,12 +190,35 @@ export function buildApp(env: AppEnv) {
         })
       : null
 
-    const skipSegments = await aniSkip.getSegments(
+    const aniSkipSegments = await aniSkip.getSegments(
       show.title,
       input.episodeNumber,
       null,
       show.originalTitle ? [show.originalTitle] : [],
     )
+    const localFallbackNeeded =
+      !hasSkipSegment(aniSkipSegments, 'Skip intro') || !hasSkipSegment(aniSkipSegments, 'Skip outro')
+    const skipSegments = localFallbackNeeded
+      ? mergeSkipSegments(
+          aniSkipSegments,
+          await localSkip.getSegments({
+            showId: input.showId,
+            episodeNumber: input.episodeNumber,
+            translationType: input.translationType ?? 'sub',
+            subtitleUrl: candidate.subtitleUrl,
+            subtitleMimeType: candidate.subtitleMimeType,
+            streamUrl: candidate.url,
+            headers: candidate.headers,
+            referenceStreams: await resolveReferenceStreams(
+              provider,
+              input.showId,
+              input.translationType ?? 'sub',
+              episodes,
+              input.episodeNumber,
+            ),
+          }),
+        )
+      : aniSkipSegments
     const nextEpisodeNumber = provider.getNextEpisodeNumber(episodes, input.episodeNumber)
 
     return {
@@ -316,6 +341,60 @@ export function buildApp(env: AppEnv) {
   })
 
   return app
+}
+
+function hasSkipSegment(segments: ResolvedStream['skipSegments'], label: string) {
+  return segments.some((segment) => segment.label.toLowerCase() === label.toLowerCase())
+}
+
+function mergeSkipSegments(primary: ResolvedStream['skipSegments'], fallback: ResolvedStream['skipSegments']) {
+  const byLabel = new Map<string, ResolvedStream['skipSegments'][number]>()
+
+  for (const segment of primary) {
+    byLabel.set(segment.label.toLowerCase(), segment)
+  }
+
+  for (const segment of fallback) {
+    const key = segment.label.toLowerCase()
+    if (!byLabel.has(key)) {
+      byLabel.set(key, segment)
+    }
+  }
+
+  return [...byLabel.values()].sort((left, right) => left.startTime - right.startTime)
+}
+
+async function resolveReferenceStreams(
+  provider: AllAnimeAdapter,
+  showId: string,
+  translationType: TranslationType,
+  episodes: Array<{ number: string }>,
+  currentEpisodeNumber: string,
+) {
+  const index = episodes.findIndex((episode) => episode.number === currentEpisodeNumber)
+  if (index < 0) {
+    return []
+  }
+
+  const candidates = [episodes[index + 1], episodes[index - 1]].filter((episode): episode is { number: string } =>
+    Boolean(episode),
+  )
+  const resolved: Array<{ episodeNumber: string; streamUrl: string; headers: Record<string, string> }> = []
+
+  for (const episode of candidates) {
+    try {
+      const playback = await provider.resolvePlayback(showId, episode.number, translationType)
+      resolved.push({
+        episodeNumber: episode.number,
+        streamUrl: playback.url,
+        headers: playback.headers,
+      })
+    } catch {
+      continue
+    }
+  }
+
+  return resolved
 }
 
 async function serveFrontendRequest(requestPath: string, reply: ReturnType<typeof Fastify>['reply'], env: AppEnv) {

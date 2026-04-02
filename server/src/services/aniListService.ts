@@ -107,10 +107,15 @@ type HomeDiscoverPayload = HomePayload['discover']
 type AniListSeason = 'WINTER' | 'SPRING' | 'SUMMER' | 'FALL'
 
 const BACKGROUND_IMPORT_INTERVAL_MS = 10 * 60 * 1000
+const ANILIST_GRAPHQL_ENDPOINTS = ['https://graphql.anilist.co', 'https://graphql.anilist.co/'] as const
+const ANILIST_GRAPHQL_MIN_INTERVAL_MS = 750
+const ANILIST_GRAPHQL_MAX_RETRIES = 4
 
 export class AniListService {
   private timer: NodeJS.Timeout | null = null
   private syncing = false
+  private graphqlQueue: Promise<void> = Promise.resolve()
+  private lastGraphqlRequestAt = 0
 
   constructor(
     private readonly env: AppEnv,
@@ -251,8 +256,11 @@ export class AniListService {
   }
 
   async syncNow(): Promise<AniListConnection> {
-    await this.flushPending()
-    await this.importRemoteState(true)
+    const importedCount = await this.importRemoteState(true)
+    const backpostedCount = await this.backpostLocalState()
+    this.database.setAniListStatus(
+      `Two-way sync complete (${importedCount} AniList items imported, ${backpostedCount} AniFlow items backposted)`,
+    )
     return this.getPublicConnection()
   }
 
@@ -268,11 +276,15 @@ export class AniListService {
 
     this.syncing = true
     try {
-      await this.flushPending()
+      const pushedCount = await this.flushPending()
 
       const connection = this.database.getAniListConnection()
       if (!connection?.accessToken) {
         return
+      }
+
+      if (pushedCount > 0) {
+        this.database.setAniListStatus(`Pushed ${pushedCount} AniFlow change${pushedCount === 1 ? '' : 's'} to AniList`)
       }
 
       if (shouldImportNow(connection.lastPullAt)) {
@@ -283,36 +295,51 @@ export class AniListService {
     }
   }
 
-  private async flushPending(): Promise<void> {
-    const connection = this.database.getAniListConnection()
-    if (!connection?.accessToken) {
-      return
-    }
-
-    const jobs = this.database.takePendingAniListJobs(5)
-    for (const job of jobs) {
-      try {
-        if (job.action !== 'state') {
-          this.database.completeAniListJob(job.id)
-          continue
-        }
-
-        const payload = JSON.parse(job.payload) as AniListSyncSnapshot
-        await this.syncSnapshotToAniList(payload, connection.accessToken)
-        this.database.completeAniListJob(job.id)
-        this.database.setAniListStatus('Pushed AniFlow changes to AniList')
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'AniList sync failed'
-        this.database.failAniListJob(job.id, message)
-        this.database.setAniListStatus(message)
-      }
-    }
+  private async backpostLocalState(): Promise<number> {
+    const snapshots = this.database.getAniListSyncSnapshots()
+    this.database.replaceAniListStateQueue(snapshots)
+    return this.flushPending()
   }
 
-  private async importRemoteState(manual: boolean): Promise<void> {
+  private async flushPending(): Promise<number> {
     const connection = this.database.getAniListConnection()
     if (!connection?.accessToken) {
-      return
+      return 0
+    }
+
+    let pushedCount = 0
+    while (true) {
+      const jobs = this.database.takePendingAniListJobs(5)
+      if (jobs.length === 0) {
+        break
+      }
+
+      for (const job of jobs) {
+        try {
+          if (job.action !== 'state') {
+            this.database.completeAniListJob(job.id)
+            continue
+          }
+
+          const payload = JSON.parse(job.payload) as AniListSyncSnapshot
+          await this.syncSnapshotToAniList(payload, connection.accessToken)
+          this.database.completeAniListJob(job.id)
+          pushedCount += 1
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'AniList sync failed'
+          this.database.failAniListJob(job.id, message)
+          this.database.setAniListStatus(message)
+        }
+      }
+    }
+
+    return pushedCount
+  }
+
+  private async importRemoteState(manual: boolean): Promise<number> {
+    const connection = this.database.getAniListConnection()
+    if (!connection?.accessToken) {
+      return 0
     }
 
     const response = await this.graphql<AniListImportResponse>(
@@ -468,6 +495,7 @@ export class AniListService {
     this.database.setAniListStatus(
       manual ? `Two-way sync complete (${importedCount} AniList items imported)` : `Imported ${importedCount} AniList items`,
     )
+    return importedCount
   }
 
   private async syncSnapshotToAniList(payload: AniListSyncSnapshot, accessToken: string): Promise<void> {
@@ -704,6 +732,14 @@ export class AniListService {
     variables: Record<string, unknown> | undefined,
     accessToken?: string | null,
   ): Promise<T> {
+    return this.enqueueGraphqlRequest(() => this.executeGraphqlRequest<T>(query, variables, accessToken))
+  }
+
+  private async executeGraphqlRequest<T>(
+    query: string,
+    variables: Record<string, unknown> | undefined,
+    accessToken?: string | null,
+  ): Promise<T> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     }
@@ -712,22 +748,64 @@ export class AniListService {
       headers.Authorization = `Bearer ${accessToken}`
     }
 
-    const response = await fetch('https://graphql.anilist.co', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ query, variables }),
-    })
+    headers.Accept = 'application/json'
 
-    if (!response.ok) {
-      throw new Error(`AniList GraphQL request failed with status ${response.status}`)
+    let lastError: Error | null = null
+    for (const endpoint of ANILIST_GRAPHQL_ENDPOINTS) {
+      try {
+        for (let attempt = 0; attempt <= ANILIST_GRAPHQL_MAX_RETRIES; attempt += 1) {
+          await this.waitForGraphqlSlot()
+          const response = await fetch(endpoint, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ query, variables }),
+          })
+
+          if (!response.ok) {
+            if (response.status === 404 && endpoint !== ANILIST_GRAPHQL_ENDPOINTS[ANILIST_GRAPHQL_ENDPOINTS.length - 1]) {
+              lastError = new Error(`AniList GraphQL request failed with status ${response.status}`)
+              break
+            }
+
+            if (response.status === 429 && attempt < ANILIST_GRAPHQL_MAX_RETRIES) {
+              await sleep(resolveRetryDelayMs(response.headers.get('retry-after'), attempt))
+              continue
+            }
+
+            throw new Error(`AniList GraphQL request failed with status ${response.status}`)
+          }
+
+          const body = (await response.json()) as { errors?: Array<{ message?: string }> }
+          if (body.errors?.length) {
+            throw new Error(body.errors.map((error) => error.message).filter(Boolean).join('; ') || 'AniList request failed')
+          }
+
+          return body as T
+        }
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error('AniList request failed')
+      }
     }
 
-    const body = (await response.json()) as { errors?: Array<{ message?: string }> }
-    if (body.errors?.length) {
-      throw new Error(body.errors.map((error) => error.message).filter(Boolean).join('; ') || 'AniList request failed')
+    throw lastError ?? new Error('AniList request failed')
+  }
+
+  private async enqueueGraphqlRequest<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.graphqlQueue.then(task, task)
+    this.graphqlQueue = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
+
+  private async waitForGraphqlSlot(): Promise<void> {
+    const waitMs = this.lastGraphqlRequestAt + ANILIST_GRAPHQL_MIN_INTERVAL_MS - Date.now()
+    if (waitMs > 0) {
+      await sleep(waitMs)
     }
 
-    return body as T
+    this.lastGraphqlRequestAt = Date.now()
   }
 }
 
@@ -745,7 +823,7 @@ function resolveDesiredStatus(payload: AniListSyncSnapshot): 'CURRENT' | 'PLANNI
     return 'COMPLETED'
   }
 
-  if (payload.resumeEpisodeNumber) {
+  if (payload.resumeEpisodeNumber || parseEpisodeValue(payload.latestEpisodeNumber) > 0) {
     return 'CURRENT'
   }
 
@@ -764,7 +842,7 @@ function resolveDesiredProgress(payload: AniListSyncSnapshot, remoteEpisodes: nu
     return latest || resume || remoteEpisodes || remoteProgress || 0
   }
 
-  if (payload.resumeEpisodeNumber) {
+  if (payload.resumeEpisodeNumber || latest > 0) {
     return resume || latest || remoteProgress || 0
   }
 
@@ -778,6 +856,25 @@ function parseEpisodeValue(value: string | null | undefined): number {
 
   const parsed = Number.parseInt(value, 10)
   return Number.isFinite(parsed) ? Math.max(0, parsed) : 0
+}
+
+function resolveRetryDelayMs(retryAfter: string | null, attempt: number): number {
+  const retryAfterSeconds = Number.parseFloat(retryAfter ?? '')
+  if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+    return Math.ceil(retryAfterSeconds * 1000)
+  }
+
+  return Math.min(1000 * 2 ** attempt, 8000)
+}
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) {
+    return Promise.resolve()
+  }
+
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
 }
 
 function fromUnixTimestamp(value: number | null | undefined): string | null {

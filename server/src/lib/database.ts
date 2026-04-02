@@ -486,6 +486,48 @@ export class AniFlowDatabase {
     }
   }
 
+  getAniListSyncSnapshots(): AniListSyncSnapshot[] {
+    const rows = this.connection
+      .prepare(`
+        SELECT
+          show_id,
+          title,
+          poster_url,
+          latest_episode_number,
+          resume_episode_number,
+          resume_time,
+          updated_at,
+          favorited,
+          watch_later,
+          completed,
+          completed_at,
+          anilist_media_id
+        FROM library_entries
+        WHERE favorited = 1
+          OR watch_later = 1
+          OR completed = 1
+          OR latest_episode_number IS NOT NULL
+          OR resume_episode_number IS NOT NULL
+          OR anilist_media_id IS NOT NULL
+        ORDER BY updated_at DESC
+      `)
+      .all() as unknown as LibraryEntryRow[]
+
+    return rows.map((row) => ({
+      showId: row.show_id,
+      title: row.title,
+      posterUrl: row.poster_url,
+      latestEpisodeNumber: row.latest_episode_number,
+      resumeEpisodeNumber: row.resume_episode_number,
+      resumeTime: row.resume_time,
+      updatedAt: row.updated_at,
+      favorited: row.favorited === 1,
+      watchLater: row.watch_later === 1,
+      completed: row.completed === 1,
+      anilistMediaId: row.anilist_media_id,
+    }))
+  }
+
   getShowIdByAniListMediaId(mediaId: number): string | null {
     const row = this.connection
       .prepare('SELECT show_id FROM library_entries WHERE anilist_media_id = ? LIMIT 1')
@@ -815,6 +857,23 @@ export class AniFlowDatabase {
         VALUES (?, ?, 'pending', 0, ?, ?)
       `)
       .run(action, JSON.stringify(payload), timestamp, timestamp)
+  }
+
+  replaceAniListStateQueue(payloads: AniListSyncSnapshot[]): void {
+    this.connection.prepare(`DELETE FROM anilist_queue WHERE action = 'state'`).run()
+    if (payloads.length === 0) {
+      return
+    }
+
+    const timestamp = nowIso()
+    const insert = this.connection.prepare(`
+      INSERT INTO anilist_queue (action, payload, status, attempts, created_at, updated_at)
+      VALUES ('state', ?, 'pending', 0, ?, ?)
+    `)
+
+    for (const payload of payloads) {
+      insert.run(JSON.stringify(payload), timestamp, timestamp)
+    }
   }
 
   takePendingAniListJobs(limit = 10): QueueJob[] {

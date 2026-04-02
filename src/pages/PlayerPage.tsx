@@ -13,7 +13,18 @@ import {
   VolumeX,
 } from 'lucide-react'
 import Hls from 'hls.js'
-import { useEffect, useMemo, useRef, useState, type Dispatch, type KeyboardEvent, type MutableRefObject, type SetStateAction } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type Dispatch,
+  type KeyboardEvent,
+  type MutableRefObject,
+  type PointerEvent as ReactPointerEvent,
+  type SetStateAction,
+} from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
 import { translationTypes, type ResolvedStream, type ShowPagePayload, type TranslationType } from '../../shared/contracts'
@@ -27,20 +38,50 @@ const SEEK_INTERVAL_SECONDS = 10
 const EPISODES_PER_RANGE = 50
 const PLAYBACK_RATES = [0.75, 1, 1.25, 1.5, 2] as const
 const BACKGROUND_REQUEST_COOLDOWN_MS = 30_000
+const AUTO_SKIP_DELAY_SECONDS = 3
+const SKIP_PROMPT_MAX_SECONDS = 10
+const SKIP_PROMPT_EXIT_ANIMATION_MS = 180
+const SCRUBBER_PREVIEW_SEEK_DELAY_MS = 50
+const SCRUBBER_PREVIEW_FRAME_TOLERANCE_SECONDS = 0.18
+const EPISODE_COMPLETION_THRESHOLD = 0.93
+const PLAYER_PROGRESS_STORAGE_KEY_PREFIX = 'aniflow-player-progress'
+const LOCAL_PROGRESS_WRITE_GRANULARITY_SECONDS = 1
+const PLAYBACK_REFRESH_COOLDOWN_MS = 2_000
 
 export function PlayerPage() {
   const { showId = '', episodeNumber = '' } = useParams()
-  const { password, preferredTranslationType, autoNextEnabled, setAutoNextEnabled } = useSession()
+  const {
+    password,
+    preferredTranslationType,
+    autoNextEnabled,
+    setAutoNextEnabled,
+    autoSkipSegmentsEnabled,
+    setAutoSkipSegmentsEnabled,
+  } = useSession()
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const playerRef = useRef<HTMLDivElement | null>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
+  const previewVideoRef = useRef<HTMLVideoElement | null>(null)
+  const previewCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const settingsMenuRef = useRef<HTMLDivElement | null>(null)
   const hideControlsTimerRef = useRef<number | null>(null)
   const pendingSeekTimeRef = useRef<number | null>(null)
+  const skipPromptExitTimerRef = useRef<number | null>(null)
+  const previewSeekTimerRef = useRef<number | null>(null)
+  const previewSourceReadyRef = useRef(false)
+  const pendingPreviewTimeRef = useRef<number | null>(null)
   const resumePlaybackRef = useRef(false)
   const backgroundRequestBlockedUntilRef = useRef(0)
+  const backgroundedWhilePlayingRef = useRef(false)
+  const playbackRefreshInFlightRef = useRef(false)
+  const lastPlaybackRefreshAtRef = useRef(0)
+  const lastLocalProgressSecondRef = useRef(-1)
   const lastVolumeRef = useRef(1)
+  const persistProgressSnapshotRef = useRef<
+    (completed: boolean, options?: { keepalive?: boolean }) => void
+  >(() => undefined)
+  const recoverPlaybackStateRef = useRef<(shouldResumePlayback: boolean) => void>(() => undefined)
   const [stream, setStream] = useState<ResolvedStream | null>(null)
   const [showPage, setShowPage] = useState<ShowPagePayload | null>(null)
   const [showPageLoading, setShowPageLoading] = useState(true)
@@ -63,19 +104,35 @@ export function PlayerPage() {
   const [showRemainingTime, setShowRemainingTime] = useState(false)
   const [selectedQualityId, setSelectedQualityId] = useState<string | null>(null)
   const [selectedRangeKey, setSelectedRangeKey] = useState('all')
+  const [dismissedSkipSegmentKey, setDismissedSkipSegmentKey] = useState<string | null>(null)
+  const [renderedSkipSegment, setRenderedSkipSegment] = useState<ResolvedStream['skipSegments'][number] | null>(null)
+  const [skipPromptPhase, setSkipPromptPhase] = useState<'hidden' | 'entering' | 'visible' | 'exiting'>('hidden')
+  const [skipPromptStartedAt, setSkipPromptStartedAt] = useState<number | null>(null)
+  const [scrubberPreview, setScrubberPreview] = useState<{ left: number; time: number; visible: boolean }>({
+    left: 0,
+    time: 0,
+    visible: false,
+  })
+  const [scrubberPreviewFrameReady, setScrubberPreviewFrameReady] = useState(false)
+  const [volumeTooltipVisible, setVolumeTooltipVisible] = useState(false)
   const [availableTranslations, setAvailableTranslations] = useState<Record<TranslationType, boolean>>({
     sub: true,
     dub: true,
   })
   const translationType = resolveTranslationType(searchParams.get('mode'), preferredTranslationType)
-  const resumeAt = parseSeekValue(searchParams.get('t'))
+  const [playbackRefreshToken, setPlaybackRefreshToken] = useState(0)
+  const episodes = showPage?.episodes ?? []
+  const currentEpisodeDetails = episodes.find((episode) => episode.number === episodeNumber) ?? null
+  const explicitResumeAt = parseSeekValue(searchParams.get('t'))
+  const localResumeSnapshot = readPlayerProgressSnapshot(showId, episodeNumber)
+  const resumeAt = selectResumeTime(explicitResumeAt, localResumeSnapshot, currentEpisodeDetails?.progress ?? null)
   const activeQuality = stream?.qualities.find((quality) => quality.id === selectedQualityId) ?? stream?.qualities[0] ?? null
   const progressPercent = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0
   const bufferedPercent = duration > 0 ? Math.min(100, (bufferedEnd / duration) * 100) : 0
+  const displayedVolume = isMuted ? 0 : volume
+  const volumePercent = Math.round(displayedVolume * 100)
   const captionsAvailable = Boolean(stream?.subtitleUrl) || availableTextTrackCount > 0
   const pictureInPictureSupported = typeof document !== 'undefined' && document.pictureInPictureEnabled
-  const episodes = showPage?.episodes ?? []
-  const currentEpisodeDetails = episodes.find((episode) => episode.number === episodeNumber) ?? null
   const nextEpisodeDetails =
     stream?.nextEpisodeNumber ? episodes.find((episode) => episode.number === stream.nextEpisodeNumber) ?? null : null
   const episodeRanges = useMemo(() => buildEpisodeRanges(episodes), [episodes])
@@ -84,21 +141,139 @@ export function PlayerPage() {
     ? episodes.filter((episode) => activeRange.episodeNumbers.has(episode.number))
     : episodes
   const finishesShow = shouldMarkShowCompleted(episodes, episodeNumber)
+  const resolvedSkipSegments = useMemo(
+    () => normalizeSkipSegmentsForDuration(stream?.skipSegments ?? [], duration),
+    [duration, stream?.skipSegments],
+  )
+
+  const requestPlaybackRefresh = (shouldResumePlayback: boolean) => {
+    const now = Date.now()
+    if (playbackRefreshInFlightRef.current || now - lastPlaybackRefreshAtRef.current < PLAYBACK_REFRESH_COOLDOWN_MS) {
+      return
+    }
+
+    const video = videoRef.current
+    playbackRefreshInFlightRef.current = true
+    lastPlaybackRefreshAtRef.current = now
+    pendingSeekTimeRef.current = video?.currentTime ?? currentTime ?? null
+    resumePlaybackRef.current = shouldResumePlayback
+    setVideoReady(false)
+    setError(null)
+    setPlaybackRefreshToken((value) => value + 1)
+  }
+
+  const buildProgressSnapshot = (completed: boolean) => {
+    const video = videoRef.current
+    if (!video || !stream) {
+      return null
+    }
+
+    const safeDuration = Number.isFinite(video.duration) ? video.duration : duration
+    const shouldMarkCompleted = completed || shouldTreatEpisodeAsCompleted(video.currentTime, safeDuration)
+    return {
+      showId,
+      episodeNumber,
+      title: stream.showTitle,
+      posterUrl: showPage?.show.posterUrl ?? null,
+      currentTime: shouldMarkCompleted ? safeDuration : video.currentTime,
+      duration: safeDuration,
+      completed: shouldMarkCompleted,
+    }
+  }
+
+  const persistProgressSnapshot = (completed: boolean, options: { keepalive?: boolean } = {}) => {
+    const snapshot = buildProgressSnapshot(completed)
+    if (!snapshot) {
+      return
+    }
+
+    writePlayerProgressSnapshot({
+      showId: snapshot.showId,
+      episodeNumber: snapshot.episodeNumber,
+      currentTime: snapshot.currentTime,
+      duration: snapshot.duration,
+      completed: snapshot.completed,
+      updatedAt: Date.now(),
+    })
+
+    if (Date.now() < backgroundRequestBlockedUntilRef.current) {
+      return
+    }
+
+    const api = createApi(password)
+    void api
+      .saveProgress(snapshot, options)
+      .catch((reason: unknown) => {
+        if (reason instanceof ApiError && reason.status >= 500) {
+          backgroundRequestBlockedUntilRef.current = Date.now() + BACKGROUND_REQUEST_COOLDOWN_MS
+        }
+      })
+
+    if (snapshot.completed && finishesShow) {
+      void api
+        .updateLibrary({
+          showId,
+          title: stream.showTitle,
+          posterUrl: showPage?.show.posterUrl ?? null,
+          completed: true,
+        }, options)
+        .catch((reason: unknown) => {
+          if (reason instanceof ApiError && reason.status >= 500) {
+            backgroundRequestBlockedUntilRef.current = Date.now() + BACKGROUND_REQUEST_COOLDOWN_MS
+          }
+        })
+    }
+  }
+
+  const recoverPlaybackState = (shouldResumePlayback: boolean) => {
+    const video = videoRef.current
+    if (!video || !stream) {
+      return
+    }
+
+    const shouldRecoverSource =
+      Boolean(video.error) ||
+      !video.currentSrc ||
+      video.networkState === HTMLMediaElement.NETWORK_NO_SOURCE ||
+      (shouldResumePlayback && video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA)
+
+    if (shouldRecoverSource) {
+      requestPlaybackRefresh(shouldResumePlayback)
+      return
+    }
+
+    if (!shouldResumePlayback || !video.paused || document.pictureInPictureElement === video) {
+      return
+    }
+
+    void video.play().catch(() => {
+      requestPlaybackRefresh(true)
+    })
+  }
+
+  persistProgressSnapshotRef.current = persistProgressSnapshot
+  recoverPlaybackStateRef.current = recoverPlaybackState
 
   useEffect(() => {
     const api = createApi(password)
     let active = true
+    const isPlaybackRefresh = playbackRefreshInFlightRef.current
 
-    setStream(null)
+    if (!isPlaybackRefresh) {
+      resumePlaybackRef.current = true
+      setStream(null)
+      setCurrentTime(0)
+      setDuration(0)
+      setBufferedEnd(0)
+      setControlsVisible(true)
+      setIsPlaying(false)
+      setSettingsOpen(false)
+      setEpisodePickerOpen(false)
+    }
+
     setError(null)
-    setCurrentTime(0)
-    setDuration(0)
-    setBufferedEnd(0)
-    setControlsVisible(true)
-    setIsPlaying(false)
-    setSettingsOpen(false)
-    setEpisodePickerOpen(false)
     setVideoReady(false)
+    lastLocalProgressSecondRef.current = -1
 
     void api
       .resolvePlayback({ showId, episodeNumber, translationType })
@@ -107,6 +282,7 @@ export function PlayerPage() {
           return
         }
 
+        playbackRefreshInFlightRef.current = false
         setStream(resolved)
       })
       .catch((reason: unknown) => {
@@ -114,13 +290,14 @@ export function PlayerPage() {
           return
         }
 
+        playbackRefreshInFlightRef.current = false
         setError(reason instanceof ApiError ? reason.message : 'Unable to resolve this stream right now')
       })
 
     return () => {
       active = false
     }
-  }, [episodeNumber, password, showId, translationType])
+  }, [episodeNumber, password, playbackRefreshToken, showId, translationType])
 
   useEffect(() => {
     const api = createApi(password)
@@ -203,7 +380,6 @@ export function PlayerPage() {
     const sourceUrl = activeQuality?.proxyUrl ?? stream.streamUrl
     const restoreTime = pendingSeekTimeRef.current ?? resumeAt
     const shouldResumePlayback = resumePlaybackRef.current
-    let hls: Hls | null = null
 
     const syncReadyState = () => {
       setVideoReady(true)
@@ -221,28 +397,57 @@ export function PlayerPage() {
       }
     }
 
-    const isHlsStream = stream.mimeType.includes('mpegurl') || sourceUrl.includes('.m3u8')
-    if (isHlsStream && Hls.isSupported()) {
-      hls = new Hls()
-      hls.loadSource(sourceUrl)
-      hls.attachMedia(video)
-    } else {
-      video.src = sourceUrl
-      video.load()
-    }
+    const cleanup = attachVideoSource(video, sourceUrl, stream.mimeType)
 
     video.addEventListener('loadedmetadata', syncReadyState)
     video.addEventListener('canplay', syncReadyState, { once: true })
 
     return () => {
-      resumePlaybackRef.current = false
       video.removeEventListener('loadedmetadata', syncReadyState)
       video.removeEventListener('canplay', syncReadyState)
-      hls?.destroy()
-      video.removeAttribute('src')
-      video.load()
+      cleanup()
     }
   }, [activeQuality?.proxyUrl, resumeAt, stream])
+
+  useEffect(() => {
+    const previewVideo = previewVideoRef.current
+    if (!previewVideo || !stream) {
+      return
+    }
+
+    const sourceUrl = activeQuality?.proxyUrl ?? stream.streamUrl
+    previewSourceReadyRef.current = false
+    setScrubberPreviewFrameReady(false)
+
+    const handleSourceReady = () => {
+      previewSourceReadyRef.current = true
+      if (pendingPreviewTimeRef.current !== null) {
+        schedulePreviewSeek(pendingPreviewTimeRef.current, previewVideoRef, previewSourceReadyRef, previewSeekTimerRef, drawPreviewFrame)
+      }
+    }
+
+    const handleSeeked = () => {
+      drawPreviewFrame()
+    }
+
+    const cleanup = attachVideoSource(previewVideo, sourceUrl, stream.mimeType)
+    previewVideo.muted = true
+    previewVideo.defaultMuted = true
+    previewVideo.playsInline = true
+
+    previewVideo.addEventListener('loadedmetadata', handleSourceReady)
+    previewVideo.addEventListener('canplay', handleSourceReady)
+    previewVideo.addEventListener('seeked', handleSeeked)
+
+    return () => {
+      previewSourceReadyRef.current = false
+      clearTimer(previewSeekTimerRef)
+      previewVideo.removeEventListener('loadedmetadata', handleSourceReady)
+      previewVideo.removeEventListener('canplay', handleSourceReady)
+      previewVideo.removeEventListener('seeked', handleSeeked)
+      cleanup()
+    }
+  }, [activeQuality?.proxyUrl, stream])
 
   useEffect(() => {
     const video = videoRef.current
@@ -287,20 +492,36 @@ export function PlayerPage() {
         return
       }
 
-      const safeDuration = Number.isFinite(video.duration) ? video.duration : 0
+      const safeDuration = Number.isFinite(video.duration) ? video.duration : duration
       runBackgroundRequest(api.saveProgress({
         showId,
         episodeNumber,
         title: stream.showTitle,
         posterUrl: showPage?.show.posterUrl ?? null,
-        currentTime: completed ? safeDuration : video.currentTime,
+        currentTime: completed || shouldTreatEpisodeAsCompleted(video.currentTime, safeDuration) ? safeDuration : video.currentTime,
         duration: safeDuration,
-        completed,
+        completed: completed || shouldTreatEpisodeAsCompleted(video.currentTime, safeDuration),
       }))
     }
 
     const onTimeUpdate = () => {
       setCurrentTime(video.currentTime)
+      const currentSecond = Math.floor(video.currentTime)
+      if (
+        lastLocalProgressSecondRef.current < 0 ||
+        Math.abs(currentSecond - lastLocalProgressSecondRef.current) >= LOCAL_PROGRESS_WRITE_GRANULARITY_SECONDS
+      ) {
+        lastLocalProgressSecondRef.current = currentSecond
+        writePlayerProgressSnapshot({
+          showId,
+          episodeNumber,
+          currentTime: video.currentTime,
+          duration: Number.isFinite(video.duration) ? video.duration : duration,
+          completed: false,
+          updatedAt: Date.now(),
+        })
+      }
+
       if (video.currentTime - lastPersist < 10) {
         return
       }
@@ -314,6 +535,14 @@ export function PlayerPage() {
       setIsPlaying(false)
       setControlsVisible(true)
       clearHideTimer(hideControlsTimerRef)
+      writePlayerProgressSnapshot({
+        showId,
+        episodeNumber,
+        currentTime: Number.isFinite(video.duration) ? video.duration : duration,
+        duration: Number.isFinite(video.duration) ? video.duration : duration,
+        completed: true,
+        updatedAt: Date.now(),
+      })
       persistProgress(true)
 
       if (finishesShow) {
@@ -339,6 +568,7 @@ export function PlayerPage() {
       setIsPlaying(false)
       setControlsVisible(true)
       clearHideTimer(hideControlsTimerRef)
+      persistProgressSnapshotRef.current(false)
     }
 
     const onDurationChange = () => {
@@ -397,7 +627,18 @@ export function PlayerPage() {
       video.removeEventListener('enterpictureinpicture', onEnterPictureInPicture)
       video.removeEventListener('leavepictureinpicture', onLeavePictureInPicture)
     }
-  }, [autoNextEnabled, episodeNumber, finishesShow, navigate, password, showId, showPage?.show.posterUrl, stream, translationType])
+  }, [
+    autoNextEnabled,
+    duration,
+    episodeNumber,
+    finishesShow,
+    navigate,
+    password,
+    showId,
+    showPage?.show.posterUrl,
+    stream,
+    translationType,
+  ])
 
   useEffect(() => {
     const video = videoRef.current
@@ -480,8 +721,46 @@ export function PlayerPage() {
   }, [])
 
   useEffect(() => {
+    const handlePageHide = () => {
+      const video = videoRef.current
+      backgroundedWhilePlayingRef.current = Boolean(video && !video.paused && !video.ended)
+      persistProgressSnapshotRef.current(false, { keepalive: true })
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        handlePageHide()
+        return
+      }
+
+      recoverPlaybackStateRef.current(backgroundedWhilePlayingRef.current)
+    }
+
+    const handlePageShow = (event: PageTransitionEvent) => {
+      if (event.persisted || document.visibilityState === 'visible') {
+        recoverPlaybackStateRef.current(backgroundedWhilePlayingRef.current)
+      }
+    }
+
+    window.addEventListener('beforeunload', handlePageHide)
+    window.addEventListener('pagehide', handlePageHide)
+    window.addEventListener('pageshow', handlePageShow)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
     return () => {
+      window.removeEventListener('beforeunload', handlePageHide)
+      window.removeEventListener('pagehide', handlePageHide)
+      window.removeEventListener('pageshow', handlePageShow)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      persistProgressSnapshotRef.current(false, { keepalive: true })
       clearHideTimer(hideControlsTimerRef)
+      clearTimer(skipPromptExitTimerRef)
+      clearTimer(previewSeekTimerRef)
     }
   }, [])
 
@@ -496,10 +775,90 @@ export function PlayerPage() {
   }, [episodeNumber, episodeRanges])
 
   const activeSegment =
-    stream?.skipSegments.find(
+    resolvedSkipSegments.find(
       (segment) => currentTime >= Math.max(0, segment.startTime - 2) && currentTime < segment.endTime,
     ) ?? null
+  const activeSegmentKey = activeSegment ? getSegmentKey(activeSegment.label, activeSegment.startTime, activeSegment.endTime) : null
+  const activeSegmentAutoSkippable = activeSegment ? isAutoSkippableSegment(activeSegment.label) : false
+  const activeSegmentAutoSkipEnabled = Boolean(activeSegment && activeSegmentAutoSkippable && autoSkipSegmentsEnabled)
+  const shouldShowActiveSkipPrompt = Boolean(activeSegment && activeSegmentKey !== dismissedSkipSegmentKey)
+  const promptSegment = shouldShowActiveSkipPrompt ? activeSegment : renderedSkipSegment
+  const promptSegmentAutoSkipEnabled = Boolean(promptSegment && isAutoSkippableSegment(promptSegment.label) && autoSkipSegmentsEnabled)
   const playerLoading = !error && (!stream || !videoReady)
+
+  useEffect(() => {
+    setSkipPromptStartedAt(activeSegment ? currentTime : null)
+    setDismissedSkipSegmentKey(null)
+  }, [activeSegmentKey])
+
+  useEffect(() => {
+    if (!activeSegment || skipPromptStartedAt === null || !activeSegmentAutoSkipEnabled) {
+      return
+    }
+
+    if (currentTime - skipPromptStartedAt < AUTO_SKIP_DELAY_SECONDS) {
+      return
+    }
+
+    seekTo(activeSegment.endTime)
+  }, [activeSegment, activeSegmentAutoSkipEnabled, currentTime, skipPromptStartedAt])
+
+  useEffect(() => {
+    clearTimer(skipPromptExitTimerRef)
+
+    if (shouldShowActiveSkipPrompt && activeSegment) {
+      setRenderedSkipSegment(activeSegment)
+      setSkipPromptPhase((currentPhase) =>
+        currentPhase === 'hidden' || currentPhase === 'exiting' ? 'entering' : currentPhase,
+      )
+      return
+    }
+
+    if (!renderedSkipSegment) {
+      setSkipPromptPhase('hidden')
+      return
+    }
+
+    setSkipPromptPhase('exiting')
+    skipPromptExitTimerRef.current = window.setTimeout(() => {
+      setRenderedSkipSegment(null)
+      setSkipPromptPhase('hidden')
+      skipPromptExitTimerRef.current = null
+    }, SKIP_PROMPT_EXIT_ANIMATION_MS)
+  }, [activeSegment, renderedSkipSegment, shouldShowActiveSkipPrompt])
+
+  useEffect(() => {
+    if (!activeSegment || activeSegmentAutoSkipEnabled || skipPromptStartedAt === null) {
+      return
+    }
+
+    const promptVisibleFor = getSkipPromptVisibleSeconds(activeSegment, skipPromptStartedAt)
+    if (currentTime - skipPromptStartedAt < promptVisibleFor) {
+      return
+    }
+
+    setDismissedSkipSegmentKey(activeSegmentKey)
+  }, [activeSegment, activeSegmentAutoSkipEnabled, activeSegmentKey, currentTime, skipPromptStartedAt])
+
+  const drawPreviewFrame = () => {
+    const previewVideo = previewVideoRef.current
+    const previewCanvas = previewCanvasRef.current
+    if (!previewVideo || !previewCanvas || previewVideo.readyState < 2) {
+      return
+    }
+
+    const canvasContext = previewCanvas.getContext('2d')
+    if (!canvasContext || previewVideo.videoWidth === 0 || previewVideo.videoHeight === 0) {
+      return
+    }
+
+    try {
+      drawVideoCover(previewVideo, previewCanvas, canvasContext)
+      setScrubberPreviewFrameReady(true)
+    } catch {
+      setScrubberPreviewFrameReady(false)
+    }
+  }
 
   const handlePointerActivity = () => {
     const video = videoRef.current
@@ -521,33 +880,6 @@ export function PlayerPage() {
     }
   }
 
-  const persistProgressSnapshot = (completed: boolean) => {
-    const video = videoRef.current
-    if (!video || !stream) {
-      return
-    }
-
-    if (Date.now() < backgroundRequestBlockedUntilRef.current) {
-      return
-    }
-
-    const api = createApi(password)
-    const safeDuration = Number.isFinite(video.duration) ? video.duration : duration
-    void api.saveProgress({
-      showId,
-      episodeNumber,
-      title: stream.showTitle,
-      posterUrl: showPage?.show.posterUrl ?? null,
-      currentTime: completed ? safeDuration : video.currentTime,
-      duration: safeDuration,
-      completed,
-    }).catch((reason: unknown) => {
-      if (reason instanceof ApiError && reason.status >= 500) {
-        backgroundRequestBlockedUntilRef.current = Date.now() + BACKGROUND_REQUEST_COOLDOWN_MS
-      }
-    })
-  }
-
   const seekTo = (nextTime: number) => {
     const video = videoRef.current
     if (!video) {
@@ -556,9 +888,49 @@ export function PlayerPage() {
 
     const safeDuration = Number.isFinite(video.duration) ? video.duration : duration
     const boundedTime = Math.min(Math.max(nextTime, 0), safeDuration || Math.max(nextTime, 0))
+    const targetSegment =
+      stream?.skipSegments.find(
+        (segment) => boundedTime >= Math.max(0, segment.startTime - 2) && boundedTime < segment.endTime,
+      ) ?? null
     video.currentTime = boundedTime
     setCurrentTime(boundedTime)
+    setSkipPromptStartedAt(targetSegment ? boundedTime : null)
+    setDismissedSkipSegmentKey(null)
+    writePlayerProgressSnapshot({
+      showId,
+      episodeNumber,
+      currentTime: boundedTime,
+      duration: safeDuration,
+      completed: shouldTreatEpisodeAsCompleted(boundedTime, safeDuration),
+      updatedAt: Date.now(),
+    })
     handlePointerActivity()
+  }
+
+  const updateScrubberPreview = (event: ReactPointerEvent<HTMLInputElement>) => {
+    if (duration <= 0) {
+      return
+    }
+
+    const bounds = event.currentTarget.getBoundingClientRect()
+    if (bounds.width <= 0) {
+      return
+    }
+
+    const relativeX = clamp(event.clientX - bounds.left, 0, bounds.width)
+    const previewTime = (relativeX / bounds.width) * duration
+    pendingPreviewTimeRef.current = previewTime
+    setScrubberPreview({
+      left: clamp(relativeX, 84, Math.max(bounds.width - 84, 84)),
+      time: previewTime,
+      visible: true,
+    })
+    schedulePreviewSeek(previewTime, previewVideoRef, previewSourceReadyRef, previewSeekTimerRef, drawPreviewFrame)
+  }
+
+  const hideScrubberPreview = () => {
+    setScrubberPreview((previous) => ({ ...previous, visible: false }))
+    clearTimer(previewSeekTimerRef)
   }
 
   const togglePlayPause = () => {
@@ -568,7 +940,9 @@ export function PlayerPage() {
     }
 
     if (video.paused) {
-      void video.play().catch(() => undefined)
+      void video.play().catch(() => {
+        requestPlaybackRefresh(true)
+      })
     } else {
       video.pause()
     }
@@ -718,6 +1092,11 @@ export function PlayerPage() {
     handlePointerActivity()
   }
 
+  const toggleAutoSkipSegments = () => {
+    setAutoSkipSegmentsEnabled(!autoSkipSegmentsEnabled)
+    handlePointerActivity()
+  }
+
   const handlePlayerKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement
     if (target.closest('button, a, input')) {
@@ -737,6 +1116,14 @@ export function PlayerPage() {
       case 'arrowright':
         event.preventDefault()
         seekTo(currentTime + SEEK_INTERVAL_SECONDS)
+        break
+      case 'enter':
+        if (!shouldShowActiveSkipPrompt || !activeSegment) {
+          break
+        }
+
+        event.preventDefault()
+        seekTo(activeSegment.endTime)
         break
       case 'f':
         event.preventDefault()
@@ -759,6 +1146,13 @@ export function PlayerPage() {
     }
   }
 
+  const skipPromptCountdown = getSkipPromptCountdown(promptSegment, currentTime, skipPromptStartedAt, promptSegmentAutoSkipEnabled)
+  const skipPromptMeta = promptSegment
+    ? promptSegmentAutoSkipEnabled
+      ? `Auto skips in ${formatSecondsCountdown(skipPromptCountdown)}. Press Enter to skip now.`
+      : `Disappears in ${formatSecondsCountdown(skipPromptCountdown)}. Press Enter to skip.`
+    : ''
+
   return (
     <section className="page player-page">
       <div className="player-layout">
@@ -777,6 +1171,7 @@ export function PlayerPage() {
               <track default kind="subtitles" label="English" src={stream.subtitleUrl} srcLang="en" />
             ) : null}
           </video>
+          <video ref={previewVideoRef} aria-hidden="true" className="player-preview-source" muted playsInline tabIndex={-1} />
 
           {playerLoading ? (
             <div className="player-status">
@@ -803,6 +1198,7 @@ export function PlayerPage() {
                   aria-label="Back to episodes"
                   className="player-control player-icon-button player-back-button"
                   to={withMode(`/shows/${showId}`, translationType)}
+                  onClick={() => persistProgressSnapshot(false)}
                 >
                   <ArrowLeft size={16} strokeWidth={1.8} />
                 </Link>
@@ -855,25 +1251,53 @@ export function PlayerPage() {
                 </button>
               </div>
 
-              {activeSegment ? (
+              {promptSegment ? (
                 <button
-                  className="skip-segment-prompt"
+                  aria-label={`${promptSegment.label}. ${skipPromptMeta}`}
+                  className={`skip-segment-prompt ${skipPromptPhase === 'entering' ? 'is-entering' : ''} ${skipPromptPhase === 'exiting' ? 'is-exiting' : ''}`}
                   type="button"
-                  onClick={() => seekTo(activeSegment.endTime)}
+                  onAnimationEnd={() => {
+                    if (skipPromptPhase === 'entering') {
+                      setSkipPromptPhase('visible')
+                    }
+                  }}
+                  onClick={() => seekTo(promptSegment.endTime)}
                 >
-                  <FastForward size={16} strokeWidth={1.8} />
-                  {activeSegment.label}
+                  <span className="skip-segment-prompt-copy">
+                    <span className="skip-segment-prompt-label">{promptSegment.label}</span>
+                    <span className="skip-segment-prompt-meta">
+                      {promptSegmentAutoSkipEnabled
+                        ? `Auto skips in ${formatSecondsCountdown(skipPromptCountdown)}`
+                        : `Disappears in ${formatSecondsCountdown(skipPromptCountdown)}`}
+                    </span>
+                  </span>
                 </button>
               ) : null}
 
               <div className="player-timeline-shell">
+                {scrubberPreview.visible ? (
+                  <div className="player-scrubber-preview" style={{ left: `${scrubberPreview.left}px` }}>
+                    <div className="player-scrubber-preview-frame">
+                      {!scrubberPreviewFrameReady && showPage?.show.posterUrl ? (
+                        <img alt="" className="player-scrubber-preview-poster" src={showPage.show.posterUrl} />
+                      ) : null}
+                      <canvas
+                        ref={previewCanvasRef}
+                        aria-hidden="true"
+                        className={`player-scrubber-preview-canvas ${scrubberPreviewFrameReady ? 'is-ready' : ''}`}
+                      />
+                    </div>
+                    <div className="player-scrubber-preview-time">{formatTime(scrubberPreview.time)}</div>
+                  </div>
+                ) : null}
                 <div className="player-timeline-track" aria-hidden="true">
                   <div className="player-timeline-buffer" style={{ width: `${bufferedPercent}%` }} />
-                  {stream?.skipSegments.map((segment) => (
+                  {resolvedSkipSegments.map((segment) => (
                     <div
                       key={`${segment.label}-${segment.startTime}-${segment.endTime}`}
-                      className="player-timeline-segment"
+                      className={getTimelineSegmentClassName(segment.label)}
                       style={segmentStyle(segment.startTime, segment.endTime, duration)}
+                      title={segment.label}
                     />
                   ))}
                   <div className="player-timeline-progress" style={{ width: `${progressPercent}%` }} />
@@ -885,6 +1309,10 @@ export function PlayerPage() {
                   max={Math.max(duration, 0)}
                   min={0}
                   onChange={(event) => seekTo(Number(event.target.value))}
+                  onPointerDown={updateScrubberPreview}
+                  onPointerEnter={updateScrubberPreview}
+                  onPointerLeave={hideScrubberPreview}
+                  onPointerMove={updateScrubberPreview}
                   step={0.1}
                   type="range"
                   value={Math.min(currentTime, duration || 0)}
@@ -902,7 +1330,7 @@ export function PlayerPage() {
                 >
                   {isPlaying ? <PauseGlyph /> : <PlayGlyph />}
                 </button>
-                <div className="player-volume">
+                <div className={`player-volume ${displayedVolume === 0 ? 'is-muted' : ''}`}>
                   <button
                     aria-label={isMuted ? 'Unmute' : 'Mute'}
                     className="player-control player-icon-button"
@@ -911,16 +1339,33 @@ export function PlayerPage() {
                   >
                     {isMuted ? <VolumeX size={18} strokeWidth={1.8} /> : <Volume2 size={18} strokeWidth={1.8} />}
                   </button>
-                  <input
-                    aria-label="Volume"
-                    className="player-volume-slider"
-                    max={1}
-                    min={0}
-                    onChange={(event) => setVideoVolume(Number(event.target.value))}
-                    step={0.05}
-                    type="range"
-                    value={isMuted ? 0 : volume}
-                  />
+                  <div
+                    className={`player-volume-slider-shell ${volumeTooltipVisible ? 'is-tooltip-visible' : ''}`}
+                    style={{ '--player-volume-progress': `${volumePercent}%` } as CSSProperties}
+                  >
+                    <div aria-hidden="true" className="player-volume-tooltip">
+                      {volumePercent}%
+                    </div>
+                    <input
+                      aria-label="Volume"
+                      aria-valuetext={`${volumePercent}%`}
+                      className="player-volume-slider"
+                      max={1}
+                      min={0}
+                      onBlur={() => setVolumeTooltipVisible(false)}
+                      onChange={(event) => {
+                        setVolumeTooltipVisible(true)
+                        setVideoVolume(Number(event.target.value))
+                      }}
+                      onFocus={() => setVolumeTooltipVisible(true)}
+                      onPointerCancel={() => setVolumeTooltipVisible(false)}
+                      onPointerDown={() => setVolumeTooltipVisible(true)}
+                      onPointerUp={() => setVolumeTooltipVisible(false)}
+                      step={0.02}
+                      type="range"
+                      value={displayedVolume}
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -997,7 +1442,7 @@ export function PlayerPage() {
                             <Captions size={16} strokeWidth={1.8} />
                             Closed captions
                           </span>
-                          <span>{captionsAvailable ? (captionsEnabled ? 'On' : 'Off') : 'Unavailable'}</span>
+                          {captionsAvailable ? <span>{captionsEnabled ? 'On' : 'Off'}</span> : null}
                         </button>
                       </div>
 
@@ -1052,6 +1497,18 @@ export function PlayerPage() {
                           <span>{autoNextEnabled ? 'On' : 'Off'}</span>
                         </button>
                         <button
+                          aria-pressed={autoSkipSegmentsEnabled}
+                          className={`player-settings-row ${autoSkipSegmentsEnabled ? 'active' : ''}`}
+                          type="button"
+                          onClick={toggleAutoSkipSegments}
+                        >
+                          <span className="player-settings-row-main">
+                            <FastForward size={16} strokeWidth={1.8} />
+                            Autoskip
+                          </span>
+                          <span>{autoSkipSegmentsEnabled ? 'On' : 'Off'}</span>
+                        </button>
+                        <button
                           aria-pressed={isInPictureInPicture}
                           className={`player-settings-row ${isInPictureInPicture ? 'active' : ''}`}
                           disabled={!pictureInPictureSupported}
@@ -1093,7 +1550,6 @@ export function PlayerPage() {
                 <div className="player-episode-panel-head">
                   <div>
                     <strong>{showPage?.show.title ?? stream?.showTitle ?? 'Episodes'}</strong>
-                    <span>{showPage?.show.season ? toTitleCase(showPage.show.season) : 'Season 1'}</span>
                   </div>
                   <button className="player-control player-text-button" type="button" onClick={toggleEpisodePicker}>
                     Close
@@ -1164,6 +1620,84 @@ export function PlayerPage() {
   )
 }
 
+interface PlayerProgressSnapshot {
+  showId: string
+  episodeNumber: string
+  currentTime: number
+  duration: number
+  completed: boolean
+  updatedAt: number
+}
+
+function getPlayerProgressStorageKey(showId: string, episodeNumber: string) {
+  return `${PLAYER_PROGRESS_STORAGE_KEY_PREFIX}:${showId}:${episodeNumber}`
+}
+
+function readPlayerProgressSnapshot(showId: string, episodeNumber: string): PlayerProgressSnapshot | null {
+  try {
+    const rawValue = window.localStorage.getItem(getPlayerProgressStorageKey(showId, episodeNumber))
+    if (!rawValue) {
+      return null
+    }
+
+    const parsed = JSON.parse(rawValue) as Partial<PlayerProgressSnapshot>
+    if (
+      typeof parsed.showId !== 'string' ||
+      typeof parsed.episodeNumber !== 'string' ||
+      typeof parsed.currentTime !== 'number' ||
+      typeof parsed.duration !== 'number' ||
+      typeof parsed.completed !== 'boolean' ||
+      typeof parsed.updatedAt !== 'number'
+    ) {
+      return null
+    }
+
+    return parsed as PlayerProgressSnapshot
+  } catch {
+    return null
+  }
+}
+
+function writePlayerProgressSnapshot(snapshot: PlayerProgressSnapshot) {
+  try {
+    const storageKey = getPlayerProgressStorageKey(snapshot.showId, snapshot.episodeNumber)
+    if (snapshot.completed || snapshot.currentTime <= 0) {
+      window.localStorage.removeItem(storageKey)
+      return
+    }
+
+    window.localStorage.setItem(storageKey, JSON.stringify(snapshot))
+  } catch {
+    return
+  }
+}
+
+function selectResumeTime(
+  explicitResumeAt: number | null,
+  localSnapshot: PlayerProgressSnapshot | null,
+  episodeProgress: ShowPagePayload['episodes'][number]['progress'] | null,
+) {
+  if (explicitResumeAt !== null) {
+    return explicitResumeAt
+  }
+
+  const localResumeTime =
+    localSnapshot && !localSnapshot.completed && localSnapshot.currentTime > 0 ? localSnapshot.currentTime : null
+  const serverResumeTime =
+    episodeProgress && !episodeProgress.completed && episodeProgress.currentTime > 0 ? episodeProgress.currentTime : null
+
+  if (localResumeTime === null) {
+    return serverResumeTime
+  }
+
+  if (serverResumeTime === null) {
+    return localResumeTime
+  }
+
+  const serverUpdatedAt = episodeProgress?.updatedAt ? Date.parse(episodeProgress.updatedAt) : 0
+  return localSnapshot && localSnapshot.updatedAt >= serverUpdatedAt ? localResumeTime : serverResumeTime
+}
+
 function clearHideTimer(timerRef: MutableRefObject<number | null>) {
   if (timerRef.current !== null) {
     window.clearTimeout(timerRef.current)
@@ -1232,11 +1766,169 @@ function segmentStyle(startTime: number, endTime: number, duration: number) {
   }
 }
 
+function normalizeSkipSegmentsForDuration(
+  segments: Array<{ label: string; startTime: number; endTime: number }>,
+  duration: number,
+) {
+  if (!duration || duration <= 0) {
+    return segments
+  }
+
+  const sourceDuration = segments.reduce((max, segment) => Math.max(max, segment.endTime), 0)
+  const scale = sourceDuration > duration ? duration / sourceDuration : 1
+
+  return segments
+    .map((segment) => ({
+      ...segment,
+      startTime: clamp(segment.startTime * scale, 0, duration),
+      endTime: clamp(segment.endTime * scale, 0, duration),
+    }))
+    .filter((segment) => segment.endTime > segment.startTime)
+}
+
+function getSkipPromptCountdown(
+  segment: { label: string; startTime: number; endTime: number } | null,
+  currentTime: number,
+  skipPromptStartedAt: number | null,
+  autoSkipEnabled: boolean,
+) {
+  if (!segment) {
+    return 0
+  }
+
+  const promptStartedAt = skipPromptStartedAt ?? currentTime
+  if (!autoSkipEnabled) {
+    const promptVisibleFor = getSkipPromptVisibleSeconds(segment, promptStartedAt)
+    const elapsed = Math.max(currentTime - promptStartedAt, 0)
+    return Math.min(promptVisibleFor, Math.max(promptVisibleFor - elapsed, 0))
+  }
+
+  return Math.max(AUTO_SKIP_DELAY_SECONDS - (currentTime - promptStartedAt), 0)
+}
+
+function formatSecondsCountdown(seconds: number) {
+  return formatTime(Math.max(Math.ceil(seconds), 0))
+}
+
+function getSkipPromptVisibleSeconds(segment: { startTime: number; endTime: number }, promptStartedAt: number) {
+  return Math.min(SKIP_PROMPT_MAX_SECONDS, Math.max(segment.endTime - promptStartedAt, 0))
+}
+
 function timelineThumbStyle(progressPercent: number) {
   const boundedPercent = Math.min(Math.max(progressPercent, 0), 100)
   return {
-    left: `min(max(5px, ${boundedPercent}%), calc(100% - 5px))`,
+    left: `clamp(5px, ${boundedPercent}%, calc(100% - 5px))`,
   }
+}
+
+function attachVideoSource(video: HTMLVideoElement, sourceUrl: string, mimeType: string) {
+  let hls: Hls | null = null
+  const isHlsStream = mimeType.includes('mpegurl') || sourceUrl.includes('.m3u8')
+
+  if (isHlsStream && Hls.isSupported()) {
+    hls = new Hls()
+    hls.loadSource(sourceUrl)
+    hls.attachMedia(video)
+  } else {
+    video.src = sourceUrl
+    video.load()
+  }
+
+  return () => {
+    hls?.destroy()
+    video.removeAttribute('src')
+    video.load()
+  }
+}
+
+function schedulePreviewSeek(
+  previewTime: number,
+  previewVideoRef: MutableRefObject<HTMLVideoElement | null>,
+  previewSourceReadyRef: MutableRefObject<boolean>,
+  previewSeekTimerRef: MutableRefObject<number | null>,
+  onFrameReady: () => void,
+) {
+  clearTimer(previewSeekTimerRef)
+  previewSeekTimerRef.current = window.setTimeout(() => {
+    previewSeekTimerRef.current = null
+    const previewVideo = previewVideoRef.current
+    if (!previewVideo || !previewSourceReadyRef.current) {
+      return
+    }
+
+    const safeDuration = Number.isFinite(previewVideo.duration) ? previewVideo.duration : previewTime
+    const boundedPreviewTime = Math.min(Math.max(previewTime, 0), safeDuration || Math.max(previewTime, 0))
+    if (Math.abs(previewVideo.currentTime - boundedPreviewTime) < SCRUBBER_PREVIEW_FRAME_TOLERANCE_SECONDS) {
+      onFrameReady()
+      return
+    }
+
+    previewVideo.currentTime = boundedPreviewTime
+  }, SCRUBBER_PREVIEW_SEEK_DELAY_MS)
+}
+
+function clearTimer(timerRef: MutableRefObject<number | null>) {
+  if (timerRef.current !== null) {
+    window.clearTimeout(timerRef.current)
+    timerRef.current = null
+  }
+}
+
+function drawVideoCover(
+  video: HTMLVideoElement,
+  canvas: HTMLCanvasElement,
+  context: CanvasRenderingContext2D,
+  width = 160,
+  height = 90,
+) {
+  canvas.width = width
+  canvas.height = height
+
+  const videoAspectRatio = video.videoWidth / video.videoHeight
+  const canvasAspectRatio = width / height
+  let sourceWidth = video.videoWidth
+  let sourceHeight = video.videoHeight
+  let sourceX = 0
+  let sourceY = 0
+
+  if (videoAspectRatio > canvasAspectRatio) {
+    sourceWidth = video.videoHeight * canvasAspectRatio
+    sourceX = (video.videoWidth - sourceWidth) / 2
+  } else {
+    sourceHeight = video.videoWidth / canvasAspectRatio
+    sourceY = (video.videoHeight - sourceHeight) / 2
+  }
+
+  context.clearRect(0, 0, width, height)
+  context.drawImage(video, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, width, height)
+}
+
+function clamp(value: number, minimum: number, maximum: number) {
+  return Math.min(Math.max(value, minimum), maximum)
+}
+
+function getTimelineSegmentClassName(label: string) {
+  const normalized = label.toLowerCase()
+  if (normalized.includes('intro')) {
+    return 'player-timeline-segment player-timeline-segment-intro'
+  }
+  if (normalized.includes('outro')) {
+    return 'player-timeline-segment player-timeline-segment-outro'
+  }
+  if (normalized.includes('recap')) {
+    return 'player-timeline-segment player-timeline-segment-recap'
+  }
+
+  return 'player-timeline-segment'
+}
+
+function isAutoSkippableSegment(label: string) {
+  const normalized = label.toLowerCase()
+  return normalized.includes('intro') || normalized.includes('outro')
+}
+
+function getSegmentKey(label: string, startTime: number, endTime: number) {
+  return `${label}-${startTime}-${endTime}`
 }
 
 function buildEpisodeRanges(episodes: ShowPagePayload['episodes']) {
@@ -1277,12 +1969,12 @@ function shouldMarkShowCompleted(episodes: ShowPagePayload['episodes'], episodeN
   return episodes.every((episode) => episode.number === episodeNumber || Boolean(episode.progress?.completed))
 }
 
-function toTitleCase(value: string) {
-  return value
-    .split(/[\s_-]+/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
-    .join(' ')
+function shouldTreatEpisodeAsCompleted(currentTime: number, duration: number): boolean {
+  if (!Number.isFinite(currentTime) || !Number.isFinite(duration) || duration <= 0) {
+    return false
+  }
+
+  return currentTime / duration >= EPISODE_COMPLETION_THRESHOLD
 }
 
 function PlayGlyph() {

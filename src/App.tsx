@@ -6,9 +6,11 @@ import { GlobalSearch } from './components/GlobalSearch'
 import type { AniListConnection } from '../shared/contracts'
 import {
   readStoredAutoNext,
+  readStoredAutoSkipSegments,
   readStoredPassword,
   readStoredPreferredTranslation,
   writeStoredAutoNext,
+  writeStoredAutoSkipSegments,
   writeStoredPassword,
   writeStoredPreferredTranslation,
 } from './lib/appPreferences'
@@ -269,6 +271,7 @@ export function App() {
   const [password, setPasswordState] = useState(readStoredPassword)
   const [preferredTranslationType, setPreferredTranslationTypeState] = useState(readStoredPreferredTranslation)
   const [autoNextEnabled, setAutoNextEnabledState] = useState(readStoredAutoNext)
+  const [autoSkipSegmentsEnabled, setAutoSkipSegmentsEnabledState] = useState(readStoredAutoSkipSegments)
 
   const value: SessionContextValue = {
     password,
@@ -285,6 +288,11 @@ export function App() {
     setAutoNextEnabled: (nextValue) => {
       setAutoNextEnabledState(nextValue)
       writeStoredAutoNext(nextValue)
+    },
+    autoSkipSegmentsEnabled,
+    setAutoSkipSegmentsEnabled: (nextValue) => {
+      setAutoSkipSegmentsEnabledState(nextValue)
+      writeStoredAutoSkipSegments(nextValue)
     },
   }
 

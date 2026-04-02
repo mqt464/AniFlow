@@ -9,6 +9,8 @@ export interface SessionContextValue {
   setPreferredTranslationType: (value: TranslationType) => void
   autoNextEnabled: boolean
   setAutoNextEnabled: (value: boolean) => void
+  autoSkipSegmentsEnabled: boolean
+  setAutoSkipSegmentsEnabled: (value: boolean) => void
 }
 
 export const SessionContext = createContext<SessionContextValue | null>(null)

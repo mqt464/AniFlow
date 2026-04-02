@@ -92,16 +92,16 @@ export function createApi(password?: string | null) {
       ),
     resolvePlayback: (input: PlaybackResolveInput) =>
       request<ResolvedStream>('/api/playback/resolve', { method: 'POST', body: JSON.stringify(input) }, password),
-    saveProgress: (input: ProgressInput) =>
+    saveProgress: (input: ProgressInput, options: RequestInit = {}) =>
       request<{ progress: ProgressInput & { updatedAt: string } }>(
         '/api/progress',
-        { method: 'POST', body: JSON.stringify(input) },
+        { ...options, method: 'POST', body: JSON.stringify(input) },
         password,
       ),
-    updateLibrary: (input: LibraryUpdateInput) =>
+    updateLibrary: (input: LibraryUpdateInput, options: RequestInit = {}) =>
       request<{ entry: LibraryEntry }>(
         '/api/library',
-        { method: 'POST', body: JSON.stringify(input) },
+        { ...options, method: 'POST', body: JSON.stringify(input) },
         password,
       ),
     connectAniList: (input: AniListConnectInput) =>
