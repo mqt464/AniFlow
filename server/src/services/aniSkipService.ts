@@ -33,84 +33,99 @@ interface AniSkipTimestampsResponse {
   }
 }
 
+interface AniSkipGraphQlError {
+  message?: string
+}
+
+interface AniSkipGraphQlEnvelope {
+  errors?: AniSkipGraphQlError[]
+}
+
 export class AniSkipService {
   constructor(
     private readonly env: AppEnv,
     private readonly database: AniFlowDatabase,
   ) {}
 
-  async getSegments(showTitle: string, episodeNumber: string, fallbackDuration: number | null): Promise<SkipSegment[]> {
+  async getSegments(
+    showTitle: string,
+    episodeNumber: string,
+    fallbackDuration: number | null,
+    alternateTitles: string[] = [],
+  ): Promise<SkipSegment[]> {
     const cacheKey = `aniskip:v2:${normalizeTitle(showTitle)}:${episodeNumber}`
     const cached = this.database.getCachedJson<SkipSegment[]>(cacheKey)
     if (cached) {
       return cached
     }
 
-    const showIds = await this.findShowIds(showTitle)
-    let bestSegments: SkipSegment[] = []
-    let bestScore = -1
+    try {
+      const showIds = await this.findShowIds(showTitle, alternateTitles)
+      let bestSegments: SkipSegment[] = []
+      let bestScore = -1
 
-    for (const showId of showIds) {
-      const episodes = await this.getEpisodes(showId)
-      const matches = this.rankEpisodeCandidates(episodes, episodeNumber)
+      for (const showId of showIds) {
+        const episodes = await this.getEpisodes(showId)
+        const matches = this.rankEpisodeCandidates(episodes, episodeNumber)
 
-      for (const episode of matches.slice(0, 6)) {
-        const timestamps = await this.getTimestamps(episode.id)
-        const totalDuration = fallbackDuration ?? episode.baseDuration ?? 0
-        const segments = this.buildSegments(timestamps, totalDuration)
-        const score = this.scoreSegments(segments, totalDuration)
+        for (const episode of matches.slice(0, 6)) {
+          const timestamps = await this.getTimestamps(episode.id)
+          const totalDuration = fallbackDuration ?? episode.baseDuration ?? 0
+          const segments = this.buildSegments(timestamps, totalDuration)
+          const score = this.scoreSegments(segments, totalDuration)
 
-        if (score > bestScore) {
-          bestSegments = segments
-          bestScore = score
+          if (score > bestScore) {
+            bestSegments = segments
+            bestScore = score
+          }
+
+          if (score >= 10) {
+            break
+          }
         }
 
-        if (score >= 10) {
+        if (bestScore >= 10) {
           break
         }
       }
 
-      if (bestScore >= 10) {
-        break
+      this.database.setCachedJson(cacheKey, bestSegments, 1000 * 60 * 60 * 24)
+      return bestSegments
+    } catch {
+      return []
+    }
+  }
+
+  private async findShowIds(showTitle: string, alternateTitles: string[]): Promise<string[]> {
+    const searchTitles = buildAniSkipSearchTitles(showTitle, alternateTitles)
+    const candidateScores = new Map<string, number>()
+
+    for (let index = 0; index < searchTitles.length; index += 1) {
+      const search = searchTitles[index]
+      const response = await this.query<AniSkipSearchResponse>(
+        `query ($search: String!, $limit: Int) {
+          searchShows(search: $search, limit: $limit) {
+            id
+            name
+            originalName
+          }
+        }`,
+        { search, limit: 10 },
+      )
+
+      for (const candidate of response.data?.searchShows ?? []) {
+        const score = scoreShowCandidate(showTitle, search, candidate) + Math.max(0, 12 - index * 2)
+        const previous = candidateScores.get(candidate.id) ?? -1
+        if (score > previous) {
+          candidateScores.set(candidate.id, score)
+        }
       }
     }
 
-    this.database.setCachedJson(cacheKey, bestSegments, 1000 * 60 * 60 * 24)
-    return bestSegments
-  }
-
-  private async findShowIds(showTitle: string): Promise<string[]> {
-    const response = await this.query<AniSkipSearchResponse>(
-      `query ($search: String!, $limit: Int) {
-        searchShows(search: $search, limit: $limit) {
-          id
-          name
-          originalName
-        }
-      }`,
-      { search: showTitle, limit: 6 },
-    )
-
-    const normalizedQuery = normalizeTitle(showTitle)
-    const candidates = response.data?.searchShows ?? []
-    return candidates
-      .map((candidate) => {
-        const normalizedCandidate = normalizeTitle(candidate.name)
-        let score = 0
-        if (normalizedCandidate === normalizedQuery) {
-          score += 3
-        }
-        if (normalizedCandidate.includes(normalizedQuery) || normalizedQuery.includes(normalizedCandidate)) {
-          score += 2
-        }
-        if (normalizeTitle(candidate.originalName ?? '').includes(normalizedQuery)) {
-          score += 1
-        }
-        return { id: candidate.id, score }
-      })
-      .filter((candidate) => candidate.score > 0)
-      .sort((left, right) => right.score - left.score)
-      .map((candidate) => candidate.id)
+    return [...candidateScores.entries()]
+      .filter(([, score]) => score >= 24)
+      .sort((left, right) => right[1] - left[1])
+      .map(([id]) => id)
   }
 
   private async getEpisodes(showId: string): Promise<AniSkipEpisode[]> {
@@ -147,12 +162,26 @@ export class AniSkipService {
 
   private rankEpisodeCandidates(episodes: AniSkipEpisode[], episodeNumber: string): AniSkipEpisode[] {
     const normalizedEpisodeNumber = normalizeTitle(episodeNumber)
+    const numericEpisodeNumber = parseNumericValue(episodeNumber)
     return episodes
-      .filter((episode) => episode.number === episodeNumber || episode.name === episodeNumber)
+      .filter((episode) => episodeMatchesNumber(episode, episodeNumber, numericEpisodeNumber))
       .map((episode) => {
         let score = 0
         if (episode.number === episodeNumber) {
           score += 4
+        }
+        if (numericEpisodeNumber !== null) {
+          const episodeNumberValue = parseNumericValue(episode.number)
+          const episodeNameValue = parseNumericValue(episode.name)
+          if (episodeNumberValue === numericEpisodeNumber) {
+            score += 3
+          }
+          if (episodeNameValue === numericEpisodeNumber) {
+            score += 2
+          }
+        }
+        if (normalizeTitle(episode.name ?? '') === normalizedEpisodeNumber) {
+          score += 2
         }
         if ((episode.name ?? '').trim() && normalizeTitle(episode.name ?? '') !== normalizedEpisodeNumber) {
           score += 1
@@ -288,6 +317,168 @@ export class AniSkipService {
       throw new Error(`AniSkip query failed with status ${response.status}`)
     }
 
-    return (await response.json()) as T
+    const body = (await response.json()) as T & AniSkipGraphQlEnvelope
+    if (body.errors?.length) {
+      throw new Error(body.errors.map((error) => error.message).filter(Boolean).join('; ') || 'AniSkip query failed')
+    }
+
+    return body
   }
+}
+
+function buildAniSkipSearchTitles(showTitle: string, alternateTitles: string[]): string[] {
+  const values = new Set<string>()
+
+  const queue = [showTitle, ...alternateTitles]
+    .map((value) => value.trim())
+    .filter(Boolean)
+
+  const push = (value: string) => {
+    const trimmed = value.trim()
+    if (trimmed) {
+      values.add(trimmed)
+    }
+  }
+
+  for (const value of queue) {
+    push(value)
+    push(value.replace(/\([^)]*\)\s*$/u, ''))
+    push(value.replace(/\b(?:season|cour|part)\s+\d+\b.*$/iu, ''))
+    push(value.replace(/\b\d+(?:st|nd|rd|th)\s+season\b.*$/iu, ''))
+
+    if (value.includes(': ')) {
+      push(value.split(': ')[0] ?? '')
+    }
+
+    if (value.includes(' - ')) {
+      push(value.split(' - ')[0] ?? '')
+    }
+  }
+
+  return [...values].slice(0, 6)
+}
+
+function scoreShowCandidate(
+  showTitle: string,
+  searchTitle: string,
+  candidate: { name: string; originalName?: string | null },
+): number {
+  const normalizedShowTitle = normalizeTitle(showTitle)
+  const normalizedSearchTitle = normalizeTitle(searchTitle)
+  const normalizedCandidateName = normalizeTitle(candidate.name)
+  const normalizedCandidateOriginal = normalizeTitle(candidate.originalName ?? '')
+  const candidateTitles = [normalizedCandidateName, normalizedCandidateOriginal].filter(Boolean)
+  const showSeason = extractSeasonNumber(showTitle)
+  const candidateSeason = extractSeasonNumber(candidate.name) ?? extractSeasonNumber(candidate.originalName ?? '')
+  let score = 0
+
+  for (const candidateTitle of candidateTitles) {
+    score = Math.max(score, scoreNormalizedTitle(normalizedShowTitle, candidateTitle))
+    score = Math.max(score, scoreNormalizedTitle(normalizedSearchTitle, candidateTitle) - 10)
+  }
+
+  if (showSeason !== null) {
+    if (candidateSeason === showSeason) {
+      score += 18
+    } else if (candidateSeason !== null) {
+      score -= 12
+    } else {
+      score -= 3
+    }
+  }
+
+  return score
+}
+
+function scoreNormalizedTitle(query: string, candidate: string): number {
+  if (!query || !candidate) {
+    return 0
+  }
+
+  if (query === candidate) {
+    return 100
+  }
+
+  if (candidate.includes(query) || query.includes(candidate)) {
+    return 74
+  }
+
+  const overlap = tokenOverlap(query, candidate)
+  if (overlap >= 0.9) {
+    return 68
+  }
+  if (overlap >= 0.75) {
+    return 56
+  }
+  if (overlap >= 0.6) {
+    return 42
+  }
+  if (overlap >= 0.45) {
+    return 28
+  }
+
+  return 0
+}
+
+function tokenOverlap(left: string, right: string): number {
+  const leftTokens = new Set(left.split(' ').filter(Boolean))
+  const rightTokens = new Set(right.split(' ').filter(Boolean))
+
+  if (!leftTokens.size || !rightTokens.size) {
+    return 0
+  }
+
+  let overlap = 0
+  for (const token of leftTokens) {
+    if (rightTokens.has(token)) {
+      overlap += 1
+    }
+  }
+
+  return overlap / Math.max(leftTokens.size, rightTokens.size)
+}
+
+function extractSeasonNumber(value: string): number | null {
+  const normalized = normalizeTitle(value)
+  if (!normalized) {
+    return null
+  }
+
+  const directSeasonMatch = normalized.match(/\bseason\s+(\d+)\b/u)
+  if (directSeasonMatch) {
+    return Number(directSeasonMatch[1])
+  }
+
+  const ordinalSeasonMatch = normalized.match(/\b(\d+)(?:st|nd|rd|th)\s+season\b/u)
+  if (ordinalSeasonMatch) {
+    return Number(ordinalSeasonMatch[1])
+  }
+
+  const trailingNumberMatch = normalized.match(/\b(\d+)\b$/u)
+  if (trailingNumberMatch && !normalized.includes('episode')) {
+    return Number(trailingNumberMatch[1])
+  }
+
+  return null
+}
+
+function parseNumericValue(value: string | null | undefined): number | null {
+  if (!value) {
+    return null
+  }
+
+  const parsed = Number.parseFloat(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function episodeMatchesNumber(episode: AniSkipEpisode, episodeNumber: string, numericEpisodeNumber: number | null): boolean {
+  if (episode.number === episodeNumber || episode.name === episodeNumber) {
+    return true
+  }
+
+  if (numericEpisodeNumber === null) {
+    return false
+  }
+
+  return parseNumericValue(episode.number) === numericEpisodeNumber || parseNumericValue(episode.name) === numericEpisodeNumber
 }

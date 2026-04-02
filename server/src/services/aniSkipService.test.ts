@@ -110,6 +110,98 @@ describe('AniSkipService', () => {
 
     await expect(service.getSegments('Demo Show', '1', null)).resolves.toEqual([])
   })
+
+  it('falls back to broader title queries and prefers the matching season candidate', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      const body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as {
+        query?: string
+        variables?: Record<string, string>
+      }
+
+      if (body.query?.includes('searchShows')) {
+        if (body.variables?.search === 'My Hero Academia Season 5') {
+          return jsonResponse({
+            data: {
+              searchShows: [],
+            },
+          })
+        }
+
+        if (body.variables?.search === 'My Hero Academia') {
+          return jsonResponse({
+            data: {
+              searchShows: [
+                { id: 'season-1', name: 'My Hero Academia', originalName: null },
+                { id: 'season-5', name: 'My Hero Academia Season 5', originalName: null },
+              ],
+            },
+          })
+        }
+      }
+
+      if (body.query?.includes('findEpisodesByShowId')) {
+        return jsonResponse({
+          data: {
+            findEpisodesByShowId: [{ id: `${body.variables?.showId}-episode-1`, number: '1', name: '1', baseDuration: 1440 }],
+          },
+        })
+      }
+
+      if (body.variables?.episodeId === 'season-1-episode-1') {
+        return jsonResponse({
+          data: {
+            findTimestampsByEpisodeId: [],
+          },
+        })
+      }
+
+      if (body.variables?.episodeId === 'season-5-episode-1') {
+        return jsonResponse({
+          data: {
+            findTimestampsByEpisodeId: [
+              { at: 90, type: { name: 'Intro' } },
+              { at: 180, type: { name: 'Canon' } },
+            ],
+          },
+        })
+      }
+
+      throw new Error(`Unexpected AniSkip query: ${body.query}`)
+    })
+
+    const service = new AniSkipService(
+      { aniSkipClientId: 'test-client' } as never,
+      createDatabaseStub() as never,
+    )
+
+    await expect(service.getSegments('My Hero Academia Season 5', '1', null)).resolves.toEqual([
+      { label: 'Skip intro', startTime: 90, endTime: 180 },
+    ])
+  })
+
+  it('returns no segments when AniSkip responds with GraphQL errors', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      const body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as {
+        query?: string
+      }
+
+      if (body.query?.includes('searchShows')) {
+        return jsonResponse({
+          errors: [{ message: 'upstream unavailable' }],
+          data: null,
+        })
+      }
+
+      throw new Error(`Unexpected AniSkip query: ${body.query}`)
+    })
+
+    const service = new AniSkipService(
+      { aniSkipClientId: 'test-client' } as never,
+      createDatabaseStub() as never,
+    )
+
+    await expect(service.getSegments('Demo Show', '1', null)).resolves.toEqual([])
+  })
 })
 
 function createDatabaseStub() {

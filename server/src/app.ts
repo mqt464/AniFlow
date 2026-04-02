@@ -188,7 +188,12 @@ export function buildApp(env: AppEnv) {
         })
       : null
 
-    const skipSegments = await aniSkip.getSegments(show.title, input.episodeNumber, null)
+    const skipSegments = await aniSkip.getSegments(
+      show.title,
+      input.episodeNumber,
+      null,
+      show.originalTitle ? [show.originalTitle] : [],
+    )
     const nextEpisodeNumber = provider.getNextEpisodeNumber(episodes, input.episodeNumber)
 
     return {
