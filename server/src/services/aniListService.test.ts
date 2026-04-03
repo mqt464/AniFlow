@@ -380,4 +380,108 @@ describe('AniListService', () => {
       database.close()
     }
   }, 15000)
+
+  it('returns from manual sync after a failed backpost instead of retrying the same job forever', async () => {
+    const env = createEnv()
+    const database = new AniFlowDatabase(env.dbPath)
+    const service = new AniListService(env, database, {} as never)
+
+    database.updateLibraryEntry({
+      showId: 'unmatched-show',
+      title: 'Unmatched Show',
+      watchLater: true,
+    })
+    database.setAniListConnection({
+      viewerId: 7,
+      username: 'mat',
+      avatarUrl: null,
+      bannerUrl: null,
+      profileUrl: 'https://anilist.co/user/mat',
+      about: null,
+      accessToken: 'token',
+      refreshToken: null,
+      lastPullAt: null,
+      lastSyncStatus: 'Connected',
+    })
+
+    try {
+      let lookupRequests = 0
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input)
+        const bodyText = typeof init?.body === 'string' ? init.body : input instanceof Request ? await input.text() : '{}'
+        const body = JSON.parse(bodyText) as { query?: string }
+
+        if (!url.startsWith('https://graphql.anilist.co')) {
+          throw new Error(`Unexpected fetch: ${url}`)
+        }
+
+        if (body.query?.includes('ImportAniList')) {
+          return new Response(
+            JSON.stringify({
+              data: {
+                Viewer: {
+                  id: 7,
+                  name: 'mat',
+                  siteUrl: 'https://anilist.co/user/mat',
+                  about: null,
+                  bannerImage: null,
+                  avatar: {
+                    large: null,
+                  },
+                  favourites: {
+                    anime: {
+                      nodes: [],
+                    },
+                  },
+                },
+                MediaListCollection: {
+                  lists: [],
+                },
+              },
+            }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            },
+          )
+        }
+
+        if (body.query?.includes('LookupAniListMedia')) {
+          lookupRequests += 1
+          return new Response(
+            JSON.stringify({
+              data: {
+                Media: null,
+              },
+            }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            },
+          )
+        }
+
+        throw new Error(`Unexpected AniList query: ${body.query}`)
+      })
+
+      const result = await service.syncNow()
+      const queueRows = database.connection
+        .prepare('SELECT status, attempts, last_error FROM anilist_queue')
+        .all() as Array<{ status: string; attempts: number; last_error: string | null }>
+
+      expect(result.lastSyncStatus).toBe(
+        'AniList sync incomplete (0 imported, 0 backposted). AniList could not match this title',
+      )
+      expect(lookupRequests).toBe(1)
+      expect(queueRows).toEqual([
+        {
+          status: 'pending',
+          attempts: 1,
+          last_error: 'AniList could not match this title',
+        },
+      ])
+    } finally {
+      database.close()
+    }
+  })
 })

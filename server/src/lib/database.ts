@@ -20,6 +20,8 @@ interface QueueJob {
   attempts: number
 }
 
+const ANILIST_QUEUE_MAX_ATTEMPTS = 3
+
 interface WatchProgressRow {
   show_id: string
   episode_number: string
@@ -908,7 +910,10 @@ export class AniFlowDatabase {
     this.connection
       .prepare(`
         UPDATE anilist_queue
-        SET status = 'pending', attempts = attempts + 1, last_error = ?, updated_at = ?
+        SET status = CASE WHEN attempts + 1 >= ${ANILIST_QUEUE_MAX_ATTEMPTS} THEN 'failed' ELSE 'pending' END,
+            attempts = attempts + 1,
+            last_error = ?,
+            updated_at = ?
         WHERE id = ?
       `)
       .run(error.slice(0, 500), nowIso(), id)

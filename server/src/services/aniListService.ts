@@ -111,6 +111,12 @@ const ANILIST_GRAPHQL_ENDPOINTS = ['https://graphql.anilist.co', 'https://graphq
 const ANILIST_GRAPHQL_MIN_INTERVAL_MS = 750
 const ANILIST_GRAPHQL_MAX_RETRIES = 4
 
+interface FlushPendingResult {
+  pushedCount: number
+  failedCount: number
+  lastError: string | null
+}
+
 export class AniListService {
   private timer: NodeJS.Timeout | null = null
   private syncing = false
@@ -273,9 +279,11 @@ export class AniListService {
 
   async syncNow(): Promise<AniListConnection> {
     const importedCount = await this.importRemoteState(true)
-    const backpostedCount = await this.backpostLocalState()
+    const result = await this.backpostLocalState()
     this.database.setAniListStatus(
-      `Two-way sync complete (${importedCount} AniList items imported, ${backpostedCount} AniFlow items backposted)`,
+      result.failedCount > 0
+        ? `AniList sync incomplete (${importedCount} imported, ${result.pushedCount} backposted). ${result.lastError ?? 'Some items could not be synced.'}`
+        : `Two-way sync complete (${importedCount} AniList items imported, ${result.pushedCount} AniFlow items backposted)`,
     )
     return this.getPublicConnection()
   }
@@ -292,15 +300,19 @@ export class AniListService {
 
     this.syncing = true
     try {
-      const pushedCount = await this.flushPending()
+      const result = await this.flushPending()
 
       const connection = this.database.getAniListConnection()
       if (!connection?.accessToken) {
         return
       }
 
-      if (pushedCount > 0) {
-        this.database.setAniListStatus(`Pushed ${pushedCount} AniFlow change${pushedCount === 1 ? '' : 's'} to AniList`)
+      if (result.failedCount > 0) {
+        this.database.setAniListStatus(result.lastError ?? 'AniList sync failed')
+      } else if (result.pushedCount > 0) {
+        this.database.setAniListStatus(
+          `Pushed ${result.pushedCount} AniFlow change${result.pushedCount === 1 ? '' : 's'} to AniList`,
+        )
       }
 
       if (shouldImportNow(connection.lastPullAt)) {
@@ -311,25 +323,32 @@ export class AniListService {
     }
   }
 
-  private async backpostLocalState(): Promise<number> {
+  private async backpostLocalState(): Promise<FlushPendingResult> {
     const snapshots = this.database.getAniListSyncSnapshots()
     this.database.replaceAniListStateQueue(snapshots)
     return this.flushPending()
   }
 
-  private async flushPending(): Promise<number> {
+  private async flushPending(): Promise<FlushPendingResult> {
     const connection = this.database.getAniListConnection()
     if (!connection?.accessToken) {
-      return 0
+      return {
+        pushedCount: 0,
+        failedCount: 0,
+        lastError: null,
+      }
     }
 
     let pushedCount = 0
+    let failedCount = 0
+    let lastError: string | null = null
     while (true) {
       const jobs = this.database.takePendingAniListJobs(5)
       if (jobs.length === 0) {
         break
       }
 
+      let batchHadFailure = false
       for (const job of jobs) {
         try {
           if (job.action !== 'state') {
@@ -344,12 +363,22 @@ export class AniListService {
         } catch (error) {
           const message = error instanceof Error ? error.message : 'AniList sync failed'
           this.database.failAniListJob(job.id, message)
-          this.database.setAniListStatus(message)
+          failedCount += 1
+          lastError = message
+          batchHadFailure = true
         }
+      }
+
+      if (batchHadFailure) {
+        break
       }
     }
 
-    return pushedCount
+    return {
+      pushedCount,
+      failedCount,
+      lastError,
+    }
   }
 
   private async importRemoteState(manual: boolean): Promise<number> {
