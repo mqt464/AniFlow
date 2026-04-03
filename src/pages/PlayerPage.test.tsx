@@ -2272,6 +2272,7 @@ function buildShowPagePayload(
       },
       provider: 'allanime',
     },
+    aniListDetails: null,
     translationType: 'sub',
     episodes: [
       {

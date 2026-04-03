@@ -6,7 +6,7 @@ import path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { buildApp } from './app.js'
+import { buildApp, PLAYBACK_SKIP_TIMEOUT_MS } from './app.js'
 import type { AppEnv } from './env.js'
 import { AniFlowDatabase } from './lib/database.js'
 import { AniSkipService } from './services/aniSkipService.js'
@@ -56,6 +56,44 @@ beforeEach(() => {
 
       if (body.query?.includes('SearchAniListMetadata')) {
         const search = typeof body.variables?.search === 'string' ? body.variables.search : ''
+        if (search === 'Demo Show') {
+          return new Response(
+            JSON.stringify({
+              data: {
+                Page: {
+                  media: [
+                    {
+                      id: 101,
+                      title: {
+                        english: 'Demo Show',
+                        romaji: 'Demo Show',
+                        native: 'Demo Show Native',
+                      },
+                      synonyms: ['Demo Show'],
+                      coverImage: {
+                        extraLarge: 'https://anilist.example/demo-poster.jpg',
+                        large: 'https://anilist.example/demo-poster-large.jpg',
+                      },
+                      bannerImage: 'https://anilist.example/demo-banner.jpg',
+                      description:
+                        '<p>Following the exam&#x2014;Fern &amp; Frieren keep moving forward. [Written by MAL Rewrite]</p>',
+                      genres: ['Action', 'Adventure'],
+                      status: 'FINISHED',
+                      averageScore: 91,
+                      season: 'SPRING',
+                      seasonYear: 2024,
+                    },
+                  ],
+                },
+              },
+            }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            },
+          )
+        }
+
         if (search === 'Fallback Show') {
           return new Response(
             JSON.stringify({
@@ -83,6 +121,163 @@ beforeEach(() => {
                       seasonYear: 2025,
                     },
                   ],
+                },
+              },
+            }),
+            {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            },
+          )
+        }
+      }
+
+      if (body.query?.includes('ShowPageAniListDetails')) {
+        const mediaId = typeof body.variables?.id === 'number' ? body.variables.id : null
+        if (mediaId === 101 || mediaId === 202) {
+          return new Response(
+            JSON.stringify({
+              data: {
+                Media: {
+                  id: mediaId,
+                  siteUrl: `https://anilist.co/anime/${mediaId}`,
+                  title: {
+                    romaji: mediaId === 101 ? 'Sousou no Frieren' : 'Kusuriya no Hitorigoto',
+                    native: mediaId === 101 ? '葬送のフリーレン' : '薬屋のひとりごと',
+                  },
+                  description:
+                    '<p>Following the First-Class Mage Exam, the trio&#x2014;Frieren, Fern &amp; Stark&#x2014;heads north. [Written by MAL Rewrite]</p>',
+                  format: 'TV',
+                  status: mediaId === 101 ? 'FINISHED' : 'RELEASING',
+                  season: 'SPRING',
+                  seasonYear: mediaId === 101 ? 2024 : 2025,
+                  episodes: mediaId === 101 ? 24 : 12,
+                  duration: 24,
+                  averageScore: mediaId === 101 ? 91 : 87,
+                  popularity: mediaId === 101 ? 221004 : 40012,
+                  favourites: mediaId === 101 ? 18230 : 3201,
+                  genres: ['Action', 'Adventure', 'Drama'],
+                  startDate: {
+                    year: mediaId === 101 ? 2024 : 2025,
+                    month: 4,
+                    day: 5,
+                  },
+                  endDate: {
+                    year: mediaId === 101 ? 2024 : null,
+                    month: mediaId === 101 ? 9 : null,
+                    day: mediaId === 101 ? 27 : null,
+                  },
+                  trailer: {
+                    id: 'demo-trailer',
+                    site: 'youtube',
+                    thumbnail: 'https://img.youtube.com/vi/demo-trailer/hqdefault.jpg',
+                  },
+                  rankings: [
+                    {
+                      rank: 3,
+                      type: 'RATED',
+                      context: 'Highest Rated All Time',
+                      season: null,
+                      year: null,
+                      allTime: true,
+                    },
+                    {
+                      rank: 12,
+                      type: 'POPULAR',
+                      context: 'Most Popular All Time',
+                      season: null,
+                      year: null,
+                      allTime: true,
+                    },
+                  ],
+                  stats: {
+                    statusDistribution: [
+                      { status: 'CURRENT', amount: 50312 },
+                      { status: 'PLANNING', amount: 110204 },
+                      { status: 'COMPLETED', amount: 82311 },
+                      { status: 'PAUSED', amount: 6230 },
+                      { status: 'DROPPED', amount: 1830 },
+                    ],
+                  },
+                  tags: [
+                    {
+                      name: 'Elf Protagonist',
+                      description: 'Features an elf lead.',
+                      category: 'Cast-Main Cast',
+                      rank: 88,
+                      isMediaSpoiler: false,
+                    },
+                  ],
+                  relations: {
+                    edges: [
+                      {
+                        relationType: 'PREQUEL',
+                        node: {
+                          id: 301,
+                          siteUrl: 'https://anilist.co/anime/301',
+                          season: 'FALL',
+                          seasonYear: 2023,
+                          status: 'FINISHED',
+                          format: 'TV',
+                          averageScore: 95,
+                          title: {
+                            english: 'Frieren: Beyond Journey’s End',
+                            romaji: 'Sousou no Frieren',
+                            native: '葬送のフリーレン',
+                          },
+                          synonyms: ['Frieren'],
+                          coverImage: {
+                            extraLarge: 'https://anilist.example/relation-poster.jpg',
+                            large: 'https://anilist.example/relation-poster-large.jpg',
+                          },
+                        },
+                      },
+                    ],
+                  },
+                  recommendations: {
+                    nodes: [
+                      {
+                        rating: 145,
+                        mediaRecommendation: {
+                          id: 401,
+                          siteUrl: 'https://anilist.co/anime/401',
+                          season: 'WINTER',
+                          seasonYear: 2024,
+                          status: 'RELEASING',
+                          format: 'TV',
+                          averageScore: 89,
+                          title: {
+                            english: 'The Apothecary Diaries',
+                            romaji: 'Kusuriya no Hitorigoto',
+                            native: '薬屋のひとりごと',
+                          },
+                          synonyms: ['Apothecary Diaries'],
+                          coverImage: {
+                            extraLarge: 'https://anilist.example/recommendation-poster.jpg',
+                            large: 'https://anilist.example/recommendation-poster-large.jpg',
+                          },
+                        },
+                      },
+                    ],
+                  },
+                  reviews: {
+                    nodes: [
+                      {
+                        id: 501,
+                        summary: 'Measured pacing and strong character work.',
+                        rating: 92,
+                        ratingAmount: 18,
+                        siteUrl: 'https://anilist.co/review/501',
+                        createdAt: 1714780800,
+                        user: {
+                          name: 'mat',
+                          avatar: {
+                            large: 'https://anilist.example/reviewer.jpg',
+                          },
+                        },
+                      },
+                    ],
+                  },
                 },
               },
             }),
@@ -195,7 +390,7 @@ beforeEach(() => {
           data: [
             {
               mal_id: 101,
-              title: 'Demo Show',
+              title: 'Sousou no Frieren',
               title_english: 'Demo Show',
               title_japanese: 'Demo Show Native',
               year: 2024,
@@ -222,6 +417,22 @@ beforeEach(() => {
             { title: 'Training Day', filler: true, recap: false },
             { title: 'What Came Before', filler: false, recap: true },
           ],
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      )
+    }
+
+    if (url === 'https://api.jikan.moe/v4/anime/101/full') {
+      return new Response(
+        JSON.stringify({
+          data: {
+            title: 'Sousou no Frieren',
+            rank: 17,
+            popularity: 317,
+          },
         }),
         {
           status: 200,
@@ -550,6 +761,49 @@ describe('app api', () => {
     await app.close()
   })
 
+  it('does not block playback when skip marker enrichment stalls', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(AllAnimeAdapter.prototype, 'resolvePlayback').mockResolvedValue({
+      url: 'https://media.example/video.m3u8',
+      mimeType: 'application/vnd.apple.mpegurl',
+      headers: { Referer: 'https://allmanga.to' },
+      subtitleUrl: 'https://media.example/subtitles.vtt',
+      subtitleMimeType: 'text/vtt',
+      qualityLabel: 'Auto',
+    })
+    vi.spyOn(AniSkipService.prototype, 'getSegments').mockImplementation(
+      () => new Promise<never>(() => undefined),
+    )
+
+    const app = buildApp(createEnv())
+
+    try {
+      const responsePromise = app.inject({
+        method: 'POST',
+        url: '/api/playback/resolve',
+        payload: {
+          showId: 'demo-show',
+          episodeNumber: '1',
+          translationType: 'sub',
+        },
+      })
+
+      await vi.advanceTimersByTimeAsync(PLAYBACK_SKIP_TIMEOUT_MS + 1)
+      const response = await responsePromise
+
+      expect(response.statusCode).toBe(200)
+      expect(response.json()).toMatchObject({
+        showId: 'demo-show',
+        episodeNumber: '1',
+        skipSegments: [],
+      })
+      expect(response.json().streamUrl).toMatch(/^\/api\/playback\/proxy\//)
+    } finally {
+      vi.useRealTimers()
+      await app.close()
+    }
+  })
+
   it('returns a merged show page payload with progress and filler flags', async () => {
     const app = buildApp(createEnv())
 
@@ -573,6 +827,54 @@ describe('app api', () => {
 
     expect(response.statusCode).toBe(200)
     expect(response.json()).toMatchObject({
+      aniListDetails: {
+        mediaId: 101,
+        title: {
+          romaji: 'Sousou no Frieren',
+          native: '葬送のフリーレン',
+        },
+        synopsis: 'Following the First-Class Mage Exam, the trio—Frieren, Fern & Stark—heads north.',
+        format: 'TV',
+        episodes: 24,
+        duration: 24,
+        popularity: 221004,
+        favourites: 18230,
+        rankings: expect.arrayContaining([
+          expect.objectContaining({
+            rank: 3,
+            type: 'RATED',
+          }),
+        ]),
+        audienceStats: expect.arrayContaining([
+          expect.objectContaining({
+            status: 'CURRENT',
+            amount: 50312,
+          }),
+        ]),
+        tags: expect.arrayContaining([
+          expect.objectContaining({
+            name: 'Elf Protagonist',
+          }),
+        ]),
+        relations: expect.arrayContaining([
+          expect.objectContaining({
+            relationType: 'PREQUEL',
+            title: 'Frieren: Beyond Journey’s End',
+          }),
+        ]),
+        recommendations: expect.arrayContaining([
+          expect.objectContaining({
+            title: 'The Apothecary Diaries',
+            rating: 145,
+          }),
+        ]),
+        reviews: expect.arrayContaining([
+          expect.objectContaining({
+            summary: 'Measured pacing and strong character work.',
+            userName: 'mat',
+          }),
+        ]),
+      },
       translationType: 'sub',
       progress: {
         currentEpisodeNumber: '2',
@@ -580,7 +882,9 @@ describe('app api', () => {
         startedEpisodeCount: 1,
       },
       fillerSource: 'jikan',
-      fillerMatchTitle: 'Demo Show',
+      fillerMatchTitle: 'Sousou no Frieren',
+      malRank: 17,
+      malPopularity: 317,
     })
 
     expect(response.json().episodes).toEqual(
@@ -610,6 +914,43 @@ describe('app api', () => {
         }),
       ]),
     )
+
+    await app.close()
+  })
+
+  it('falls back cleanly when AniList detail lookups fail on the show page route', async () => {
+    const fetchMock = vi.mocked(globalThis.fetch)
+    const originalFetch = fetchMock.getMockImplementation()
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = getRequestUrl(input as string | URL | Request)
+      if (url === 'https://graphql.anilist.co') {
+        const bodyText = typeof init?.body === 'string' ? init.body : input instanceof Request ? await input.text() : '{}'
+        const body = JSON.parse(bodyText) as { query?: string }
+        if (body.query?.includes('ShowPageAniListDetails')) {
+          return new Response('rate limited', { status: 429 })
+        }
+      }
+
+      if (!originalFetch) {
+        throw new Error(`Unexpected fetch in test: ${url}`)
+      }
+
+      return originalFetch(input, init)
+    })
+
+    const app = buildApp(createEnv())
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/shows/demo-show/page?translationType=sub',
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toMatchObject({
+      show: expect.objectContaining({
+        id: 'demo-show',
+      }),
+      aniListDetails: null,
+    })
 
     await app.close()
   })

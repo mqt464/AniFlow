@@ -31,10 +31,20 @@ interface JikanEpisodeResponse {
   }>
 }
 
+interface JikanAnimeDetailsResponse {
+  data?: {
+    title?: string | null
+    rank?: number | null
+    popularity?: number | null
+  }
+}
+
 interface EpisodeAnnotationPayload {
   annotations: Record<string, EpisodeAnnotation>
   titles: Record<string, string>
   matchedTitle: string | null
+  rank: number | null
+  popularity: number | null
 }
 
 interface RankedCandidate {
@@ -49,7 +59,7 @@ export class JikanService {
   ) {}
 
   async getEpisodeAnnotations(show: ShowDetail): Promise<EpisodeAnnotationPayload> {
-    const cacheKey = `jikan:episodes:${normalizeTitle(show.title)}:${show.year ?? 'na'}`
+    const cacheKey = `jikan:episodes:v2:${normalizeTitle(show.title)}:${show.year ?? 'na'}`
     const cached = normalizeEpisodeAnnotationPayload(this.database.getCachedJson<unknown>(cacheKey))
     if (cached) {
       // Rewrite legacy cache entries so future reads stay schema-compatible.
@@ -63,16 +73,20 @@ export class JikanService {
         annotations: {},
         titles: {},
         matchedTitle: null,
+        rank: null,
+        popularity: null,
       }
       this.database.setCachedJson(cacheKey, emptyPayload, Math.min(this.env.cacheTtlMs, 1000 * 60 * 30))
       return emptyPayload
     }
 
-    const { annotations, titles } = await this.fetchEpisodes(match.mal_id)
+    const [episodes, details] = await Promise.all([this.fetchEpisodes(match.mal_id), this.fetchAnimeDetails(match.mal_id)])
     const payload: EpisodeAnnotationPayload = {
-      annotations,
-      titles,
-      matchedTitle: match.title,
+      annotations: episodes.annotations,
+      titles: episodes.titles,
+      matchedTitle: details.title ?? match.title,
+      rank: details.rank,
+      popularity: details.popularity,
     }
 
     this.database.setCachedJson(cacheKey, payload, 1000 * 60 * 60 * 24)
@@ -163,6 +177,32 @@ export class JikanService {
     return payload
   }
 
+  private async fetchAnimeDetails(malId: number): Promise<{
+    title: string | null
+    rank: number | null
+    popularity: number | null
+  }> {
+    const cacheKey = `jikan:anime-details:${malId}`
+    const cached = this.database.getCachedJson<{
+      title: string | null
+      rank: number | null
+      popularity: number | null
+    }>(cacheKey)
+    if (cached) {
+      return cached
+    }
+
+    const response = await this.fetchJson<JikanAnimeDetailsResponse>(`https://api.jikan.moe/v4/anime/${encodeURIComponent(String(malId))}/full`)
+    const payload = {
+      title: response.data?.title?.trim() || null,
+      rank: response.data?.rank ?? null,
+      popularity: response.data?.popularity ?? null,
+    }
+
+    this.database.setCachedJson(cacheKey, payload, 1000 * 60 * 60 * 24)
+    return payload
+  }
+
   private async fetchJson<T>(url: string): Promise<T> {
     const response = await fetch(url, {
       headers: {
@@ -186,13 +226,17 @@ function normalizeEpisodeAnnotationPayload(value: unknown): EpisodeAnnotationPay
   const payload = value as {
     annotations?: unknown
     titles?: unknown
-    matchedTitle?: unknown
+      matchedTitle?: unknown
+      rank?: unknown
+      popularity?: unknown
   }
 
   return {
     annotations: isRecord(payload.annotations) ? (payload.annotations as Record<string, EpisodeAnnotation>) : {},
     titles: isRecord(payload.titles) ? (payload.titles as Record<string, string>) : {},
     matchedTitle: typeof payload.matchedTitle === 'string' ? payload.matchedTitle : null,
+    rank: typeof payload.rank === 'number' ? payload.rank : null,
+    popularity: typeof payload.popularity === 'number' ? payload.popularity : null,
   }
 }
 

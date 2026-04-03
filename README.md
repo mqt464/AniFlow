@@ -34,10 +34,26 @@ docker compose up --build -d
 
 Then open `http://<your-lan-host>:8080`.
 
+## Host Update Command
+
+If you are running AniFlow directly on the host with `npm start`, use this one command instead:
+
+```bash
+npm run host:update
+```
+
+It will:
+
+- run `git pull --ff-only`
+- run `npm install` when `package.json` or `package-lock.json` changed
+- run `npm run build`
+- run `npm start`
+
 ## Scripts
 
 - `npm run dev` runs frontend and backend together
 - `npm run build` builds both targets
+- `npm run host:update` pulls, installs when needed, rebuilds, and starts the compiled app
 - `npm run start` starts the compiled backend
 - `npm run test` runs the current Vitest suite
 

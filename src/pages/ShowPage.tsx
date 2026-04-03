@@ -1,22 +1,47 @@
-import { Check, ChevronRight, Clock3, Filter, LoaderCircle, Play, Sparkles } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import {
+  Bookmark,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  ExternalLink,
+  Heart,
+  LoaderCircle,
+  Play,
+  Search,
+  Star,
+} from 'lucide-react'
+import { Fragment, useDeferredValue, useEffect, useMemo, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 
-import type { LibraryUpdateInput, ShowEpisode, ShowPagePayload, TranslationType } from '../../shared/contracts'
+import type {
+  CSSProperties,
+  LibraryEntry,
+  LibraryUpdateInput,
+  ShowEpisode,
+  ShowPageAniListDetails,
+  ShowPagePayload,
+  TranslationType,
+} from '../../shared/contracts'
 import { PosterImage } from '../components/PosterImage'
 import { ApiError, createApi } from '../lib/api'
 import { resolveTranslationType, withMode } from '../lib/appPreferences'
 import { useSession } from '../session'
 
-type EpisodeFilter = 'all' | 'continue' | 'watched' | 'filler' | 'recap'
+type AudienceStatus = 'CURRENT' | 'PLANNING' | 'COMPLETED' | 'PAUSED' | 'DROPPED'
+type EpisodeFilter = 'all' | 'continue' | 'watched' | 'unwatched' | 'filler'
+type ShowSection = 'overview' | 'episodes'
 
-const EPISODES_PER_RANGE = 50
-const FILTERS: Array<{ label: string; value: EpisodeFilter }> = [
-  { label: 'All', value: 'all' },
-  { label: 'Continue', value: 'continue' },
-  { label: 'Watched', value: 'watched' },
-  { label: 'Filler', value: 'filler' },
-  { label: 'Recap', value: 'recap' },
+const SECTION_LINKS: Array<{ id: ShowSection; label: string }> = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'episodes', label: 'Episodes' },
+]
+const AUDIENCE_ORDER: AudienceStatus[] = ['CURRENT', 'PLANNING', 'COMPLETED', 'PAUSED', 'DROPPED']
+const EPISODE_FILTERS: Array<{ value: EpisodeFilter; label: string }> = [
+  { value: 'all', label: 'All episodes' },
+  { value: 'continue', label: 'Continue' },
+  { value: 'watched', label: 'Watched' },
+  { value: 'unwatched', label: 'Unwatched' },
+  { value: 'filler', label: 'Filler' },
 ]
 
 export function ShowPage() {
@@ -27,11 +52,12 @@ export function ShowPage() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [libraryAction, setLibraryAction] = useState<string | null>(null)
-  const [pageRevision, setPageRevision] = useState(0)
-  const [episodeQuery, setEpisodeQuery] = useState('')
+  const [synopsisExpanded, setSynopsisExpanded] = useState(false)
+  const [episodeSearch, setEpisodeSearch] = useState('')
   const [episodeFilter, setEpisodeFilter] = useState<EpisodeFilter>('all')
-  const [selectedRangeKey, setSelectedRangeKey] = useState('all')
+  const [activeSection, setActiveSection] = useState<ShowSection>('overview')
   const translationType = resolveTranslationType(searchParams.get('mode'), preferredTranslationType)
+  const deferredEpisodeSearch = useDeferredValue(episodeSearch)
 
   useEffect(() => {
     const api = createApi(password)
@@ -66,12 +92,13 @@ export function ShowPage() {
     return () => {
       active = false
     }
-  }, [pageRevision, password, showId, translationType])
+  }, [password, showId, translationType])
 
+  const show = data?.show ?? null
+  const details = data?.aniListDetails ?? null
   const episodes = data?.episodes ?? []
   const progress = data?.progress
-  const ranges = useMemo(() => buildEpisodeRanges(episodes), [episodes])
-  const activeRange = ranges.find((range) => range.key === selectedRangeKey) ?? ranges[0] ?? null
+  const libraryEntry = data?.library ?? null
   const currentEpisode = progress?.currentEpisodeNumber
     ? episodes.find((episode) => episode.number === progress.currentEpisodeNumber) ?? null
     : null
@@ -79,62 +106,19 @@ export function ShowPage() {
     ? episodes.find((episode) => episode.number === progress.latestEpisodeNumber) ?? null
     : null
   const firstEpisode = episodes[0] ?? null
-  const show = data?.show ?? null
-  const libraryEntry = data?.library ?? null
-  const libraryButtonsDisabled = libraryAction !== null || !show
-  const showCompleted = Boolean(libraryEntry?.completed)
   const nextUnseenEpisode = useMemo(
     () => episodes.find((episode) => !episode.progress?.completed) ?? episodes[episodes.length - 1] ?? null,
     [episodes],
   )
-  const filterCounts = useMemo(
-    () => ({
-      all: episodes.length,
-      continue: episodes.filter((episode) => Boolean(episode.progress && !episode.progress.completed)).length,
-      watched: episodes.filter((episode) => Boolean(episode.progress?.completed)).length,
-      filler: episodes.filter((episode) => Boolean(episode.annotation?.isFiller)).length,
-      recap: episodes.filter((episode) => Boolean(episode.annotation?.isRecap)).length,
-    }),
-    [episodes],
-  )
+  const libraryButtonsDisabled = libraryAction !== null || !show
+  const showCompleted = Boolean(libraryEntry?.completed)
 
   useEffect(() => {
-    if (!ranges.length) {
-      setSelectedRangeKey('all')
-      return
-    }
-
-    const currentRange = currentEpisode ? ranges.find((range) => range.episodeNumbers.has(currentEpisode.number)) : null
-    setSelectedRangeKey(currentRange?.key ?? ranges[ranges.length - 1]?.key ?? 'all')
-  }, [currentEpisode, ranges])
-
-  const query = episodeQuery.trim().toLowerCase()
-  const useRangeFilter = query.length === 0 && episodeFilter === 'all' && Boolean(activeRange)
-  const visibleEpisodes = episodes.filter((episode) => {
-    if (useRangeFilter && activeRange && !activeRange.episodeNumbers.has(episode.number)) {
-      return false
-    }
-
-    if (query) {
-      const haystack = `${episode.number} ${episode.title}`.toLowerCase()
-      if (!haystack.includes(query)) {
-        return false
-      }
-    }
-
-    switch (episodeFilter) {
-      case 'continue':
-        return Boolean(episode.progress && !episode.progress.completed)
-      case 'watched':
-        return Boolean(episode.progress?.completed)
-      case 'filler':
-        return Boolean(episode.annotation?.isFiller)
-      case 'recap':
-        return Boolean(episode.annotation?.isRecap)
-      default:
-        return true
-    }
-  })
+    setSynopsisExpanded(false)
+    setEpisodeSearch('')
+    setEpisodeFilter('all')
+    setActiveSection('overview')
+  }, [showId, translationType])
 
   const primaryEpisode = showCompleted ? firstEpisode ?? latestEpisode : currentEpisode ?? nextUnseenEpisode ?? latestEpisode ?? firstEpisode
   const primaryLabel = currentEpisode
@@ -143,15 +127,14 @@ export function ShowPage() {
       ? firstEpisode
         ? `Watch again from episode ${firstEpisode.number}`
         : null
-    : nextUnseenEpisode
-      ? `Continue with episode ${nextUnseenEpisode.number}`
-      : latestEpisode
-        ? `Replay episode ${latestEpisode.number}`
-        : firstEpisode
-          ? 'Start watching'
-          : null
+      : nextUnseenEpisode
+        ? `Continue with episode ${nextUnseenEpisode.number}`
+        : latestEpisode
+          ? `Replay episode ${latestEpisode.number}`
+          : firstEpisode
+            ? 'Start watching'
+            : null
   const primaryHref = primaryEpisode ? episodeHref(showId, primaryEpisode, translationType) : null
-  const latestHref = episodes.length ? withMode(`/player/${showId}/${episodes[episodes.length - 1].number}`, translationType) : null
   const isInitialLoading = loading && !data && !error
   const isRefreshing = loading && Boolean(data)
 
@@ -164,7 +147,16 @@ export function ShowPage() {
       setLibraryAction(key)
       await createApi(password).updateLibrary(input)
       setError(null)
-      setPageRevision((current) => current + 1)
+      setData((current) => {
+        if (!current) {
+          return current
+        }
+
+        return {
+          ...current,
+          library: buildUpdatedLibraryEntry(current.library, input),
+        }
+      })
     } catch (reason: unknown) {
       setError(reason instanceof ApiError ? reason.message : 'Unable to update your library right now')
     } finally {
@@ -180,315 +172,554 @@ export function ShowPage() {
       }
     : null
 
+  const setMode = (nextType: TranslationType) => {
+    const nextParams = new URLSearchParams(searchParams)
+    nextParams.set('mode', nextType)
+    setSearchParams(nextParams)
+  }
+
+  const synopsis = details?.synopsis ?? show?.description ?? 'Synopsis unavailable.'
+  const shouldClampSynopsis = synopsis.length > 220
+  const bannerUrl = show?.bannerUrl ?? show?.posterUrl ?? null
+  const titleNative =
+    details?.title.native?.trim() ??
+    pickNativeTitle(show?.originalTitle ?? null, show?.title ?? null)
+  const titleRomaji =
+    pickRomajiTitle(data?.fillerMatchTitle ?? null, show?.romajiTitle ?? null, show?.originalTitle ?? null)
+  const titleLine =
+    titleNative && titleRomaji && titleNative !== titleRomaji ? { native: titleNative, romaji: titleRomaji } : null
+  const totalEpisodes = details?.episodes ?? show?.availableEpisodes?.[translationType] ?? (episodes.length || null)
+  const averageDurationMinutes = details?.duration ?? getAverageEpisodeDuration(episodes)
+  const visibleGenres = (details?.genres.length ? details.genres : show?.genres ?? []).slice(0, 5)
+  const visibleTags = details?.tags.filter((tag) => !tag.isSpoiler).slice(0, 5) ?? []
+  const scoreLabel = formatScore(details?.averageScore ?? show?.score ?? null)
+  const ratingValue = details?.averageScore ?? show?.score ?? null
+  const ratingFill = typeof ratingValue === 'number' && Number.isFinite(ratingValue) ? Math.max(0, Math.min(100, (ratingValue / 10) * 100)) : 0
+  const audienceStats = AUDIENCE_ORDER.map((status) => ({
+    status,
+    label: audienceStatusLabel(status),
+    amount: getAudienceAmount(details, status),
+  }))
+  const heroRankingTags = buildHeroRankingTags(data?.malRank ?? null, data?.malPopularity ?? null)
+  const airingStatusTag = buildAiringStatusTag(details?.status ?? show?.status)
+  const heroTaxonomyItems = buildHeroTaxonomyItems(visibleGenres, visibleTags)
+  const heroAudienceItems = buildHeroAudienceItems(audienceStats)
+  const ratingFillStyle = { width: `${ratingFill}%` } satisfies CSSProperties
+  const detailRows = [
+    { label: 'Format', value: formatLabel(details?.format) },
+    { label: 'Episodes', value: totalEpisodes ? String(totalEpisodes) : null },
+    { label: 'Episode duration', value: averageDurationMinutes ? `${averageDurationMinutes} mins` : null },
+    { label: 'Start date', value: formatDate(details?.startDate) },
+    { label: 'End date', value: formatDate(details?.endDate) },
+    { label: 'Season', value: buildSeasonLabel(details?.season ?? show?.season, details?.seasonYear ?? show?.year) },
+    { label: 'Status', value: formatStatus(details?.status ?? show?.status) },
+  ].filter((row) => Boolean(row.value))
+  const relationRows = details?.relations.slice(0, 6) ?? []
+  const recommendationRows = details?.recommendations.slice(0, 6) ?? []
+  const normalizedEpisodeSearch = deferredEpisodeSearch.trim().toLowerCase()
+  const watchedEpisodeCount = episodes.filter((episode) => episode.progress?.completed).length
+  const fillerEpisodeCount = episodes.filter((episode) => episode.annotation?.isFiller).length
+  const episodeFilterCounts = {
+    all: episodes.length,
+    continue: episodes.filter((episode) => episode.isCurrent || (episode.progress && !episode.progress.completed)).length,
+    watched: watchedEpisodeCount,
+    unwatched: episodes.filter((episode) => !episode.progress?.completed).length,
+    filler: fillerEpisodeCount,
+  } satisfies Record<EpisodeFilter, number>
+  const filteredEpisodes = episodes.filter((episode) => {
+    if (normalizedEpisodeSearch) {
+      const haystack = [episode.number, episode.title].join(' ').toLowerCase()
+      if (!haystack.includes(normalizedEpisodeSearch)) {
+        return false
+      }
+    }
+
+    switch (episodeFilter) {
+      case 'continue':
+        return episode.isCurrent || Boolean(episode.progress && !episode.progress.completed)
+      case 'watched':
+        return Boolean(episode.progress?.completed)
+      case 'unwatched':
+        return !episode.progress?.completed
+      case 'filler':
+        return Boolean(episode.annotation?.isFiller)
+      case 'all':
+        return true
+    }
+  })
+  const nextUpEpisode = currentEpisode ?? nextUnseenEpisode
+  const episodeSummaryLabel = buildEpisodeSummaryLabel({
+    visibleEpisodeCount: filteredEpisodes.length,
+    totalEpisodeCount: episodes.length,
+    searchTerm: normalizedEpisodeSearch,
+    filter: episodeFilter,
+  })
   return (
-    <section className="page show-page">
+    <section className="page show-page show-page-v3">
       {error ? <div className="notice error">{error}</div> : null}
 
-      <section className="show-shell">
-        <div className="show-overview">
-          <div className="show-overview-art">
-            <PosterImage
-              alt={show ? `${show.title} poster` : 'Show poster'}
-              className="show-overview-poster"
-              src={show?.posterUrl ?? show?.bannerUrl}
-            />
-          </div>
+      <section className="show-canvas-hero">
+        {bannerUrl ? (
+          <div
+            aria-hidden="true"
+            className="show-canvas-hero-backdrop"
+            style={{ backgroundImage: `url(${bannerUrl})` }}
+          />
+        ) : null}
 
-          <div className="show-overview-copy">
-            <div className="show-kicker">
-              {show?.year ? <span>{show.year}</span> : null}
-              {show?.season ? <span>{toTitleCase(show.season)}</span> : null}
-              {show?.status ? <span>{toTitleCase(show.status)}</span> : null}
+        <div className="show-canvas-hero-inner">
+          <PosterImage
+            alt={show ? `${show.title} poster` : 'Show poster'}
+            className="show-canvas-poster"
+            src={show?.posterUrl ?? show?.bannerUrl}
+          />
+
+          <div className="show-canvas-main">
+            <div className="show-canvas-head">
+              <div className="show-canvas-title-block">
+                {heroRankingTags.length || airingStatusTag ? (
+                  <div className="show-canvas-title-tags" aria-label="Show highlights">
+                    {heroRankingTags.map((tag) => (
+                      <div className="show-canvas-title-tag" key={`${tag.kind}-${tag.label}`}>
+                        {tag.kind === 'rated' ? <Star className="show-canvas-title-tag-icon" size={13} strokeWidth={2} /> : null}
+                        {tag.kind === 'popular' ? <Heart className="show-canvas-title-tag-icon" size={13} strokeWidth={2} /> : null}
+                        <span>{tag.label}</span>
+                      </div>
+                    ))}
+                    {airingStatusTag ? <div className="show-canvas-title-tag show-canvas-title-tag-status">{airingStatusTag}</div> : null}
+                  </div>
+                ) : null}
+
+                {titleLine ? (
+                  <p className="show-canvas-original">
+                    <span>{titleLine.native}</span>
+                    <span aria-hidden="true" className="show-canvas-original-separator">
+                      ·
+                    </span>
+                    <span>{titleLine.romaji}</span>
+                  </p>
+                ) : titleNative && titleNative !== show?.title ? (
+                  <p className="show-canvas-original">{titleNative}</p>
+                ) : titleRomaji && titleRomaji !== show?.title ? (
+                  <p className="show-canvas-original">{titleRomaji}</p>
+                ) : null}
+                <h1>{show?.title ?? 'Loading show...'}</h1>
+                {scoreLabel || heroAudienceItems.length ? (
+                  <div className="show-canvas-rating" aria-label="Score and audience">
+                    {scoreLabel ? (
+                      <div className="show-canvas-rating-chip show-canvas-rating-chip-score">
+                        <span className="show-canvas-rating-stars" aria-hidden="true">
+                          <span className="show-canvas-rating-stars-base">
+                            {Array.from({ length: 5 }).map((_, index) => (
+                              <Star key={`rating-star-base-${index}`} size={13} strokeWidth={1.9} />
+                            ))}
+                          </span>
+                          <span className="show-canvas-rating-stars-fill" style={ratingFillStyle}>
+                            {Array.from({ length: 5 }).map((_, index) => (
+                              <Star key={`rating-star-fill-${index}`} size={13} strokeWidth={1.9} />
+                            ))}
+                          </span>
+                        </span>
+                        <span className="show-canvas-rating-value">{scoreLabel}</span>
+                      </div>
+                    ) : null}
+
+                    {heroAudienceItems.map((item) => (
+                      <div className={`show-canvas-rating-chip show-canvas-rating-chip-${item.tone}`} key={item.label}>
+                        <strong>{item.value}</strong>
+                        <span>{item.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+
+                <div className="show-canvas-synopsis">
+                  <p className={`show-canvas-synopsis-copy ${synopsisExpanded ? 'expanded' : ''}`}>{synopsis}</p>
+                  {shouldClampSynopsis ? (
+                    <button
+                      aria-expanded={synopsisExpanded}
+                      className={`show-canvas-synopsis-toggle ${synopsisExpanded ? 'expanded' : ''}`}
+                      type="button"
+                      onClick={() => setSynopsisExpanded((current) => !current)}
+                    >
+                      <span>{synopsisExpanded ? 'Show less' : 'Show more'}</span>
+                      <ChevronDown size={14} strokeWidth={2} />
+                    </button>
+                  ) : null}
+
+                  {heroTaxonomyItems.length ? (
+                    <div className="show-canvas-hero-taxonomy" aria-label="Genres and tags">
+                      {heroTaxonomyItems.map((item, index) => (
+                        <Fragment key={item.key}>
+                          {index > 0 ? (
+                            <span aria-hidden="true" className="show-canvas-hero-taxonomy-separator">
+                              ·
+                            </span>
+                          ) : null}
+                          <span className={`show-canvas-hero-taxonomy-item ${item.kind === 'tag' ? 'is-tag' : ''}`}>{item.label}</span>
+                        </Fragment>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="show-canvas-hero-tools" />
             </div>
 
-            <h1>{show?.title ?? 'Loading show...'}</h1>
+            <div className="show-canvas-controls">
+              <div className="show-canvas-actions">
+                {primaryHref && primaryLabel ? (
+                  <Link className="show-canvas-primary" to={primaryHref}>
+                    <Play size={16} strokeWidth={2} />
+                    <span>{primaryLabel}</span>
+                  </Link>
+                ) : null}
 
-            {show?.originalTitle && show.originalTitle !== show.title ? (
-              <p className="show-original-title">{show.originalTitle}</p>
-            ) : null}
+                {details?.trailer?.videoUrl ? (
+                  <a className="show-canvas-trailer" href={details.trailer.videoUrl} rel="noreferrer" target="_blank">
+                    <Play size={15} strokeWidth={1.9} />
+                    <span>Watch trailer</span>
+                  </a>
+                ) : null}
 
-            <p className="show-description">
-              {show?.description ?? 'Fetching metadata, progress, and episode details.'}
-            </p>
-
-            <div className="show-metadata-strip">
-              <div>
-                <span>Episodes</span>
-                <strong>{episodes.length || show?.availableEpisodes?.[translationType] || 0}</strong>
-              </div>
-              <div>
-                <span>Seen</span>
-                <strong>{progress?.completedEpisodeCount ?? 0}</strong>
-              </div>
-              <div>
-                <span>Current</span>
-                <strong>{progress?.currentEpisodeNumber ? `Ep ${progress.currentEpisodeNumber}` : 'None'}</strong>
-              </div>
-              <div>
-                <span>Audio</span>
-                <strong>{translationType.toUpperCase()}</strong>
-              </div>
-            </div>
-
-            <div className="show-actions">
-              {primaryHref && primaryLabel ? (
-                <Link className="primary-button" to={primaryHref}>
-                  <Play size={16} strokeWidth={1.9} />
-                  {primaryLabel}
-                </Link>
-              ) : null}
-
-              {latestHref ? (
-                <Link className="secondary-button" to={latestHref}>
-                  <ChevronRight size={16} strokeWidth={1.9} />
-                  Play latest
-                </Link>
-              ) : null}
-
-              <button
-                className={libraryEntry?.watchLater ? 'secondary-button' : 'primary-button'}
-                disabled={libraryButtonsDisabled}
-                type="button"
-                onClick={() =>
-                  baseLibraryUpdate
-                    ? void runLibraryAction('watch-later', {
-                        ...baseLibraryUpdate,
-                        watchLater: !libraryEntry?.watchLater,
-                        completed: false,
-                        removeFromContinueWatching: !libraryEntry?.watchLater && Boolean(libraryEntry?.resumeEpisodeNumber),
-                      })
-                    : undefined
-                }
-              >
-                {libraryAction === 'watch-later' ? (
-                  <>
-                    <LoaderCircle className="spin" size={16} strokeWidth={2} />
-                    Saving...
-                  </>
-                ) : libraryEntry?.watchLater ? (
-                  'Remove from watch later'
-                ) : libraryEntry?.resumeEpisodeNumber ? (
-                  'Move to watch later'
-                ) : (
-                  'Add to watch later'
-                )}
-              </button>
-
-              <button
-                className="secondary-button"
-                disabled={libraryButtonsDisabled}
-                type="button"
-                onClick={() =>
-                  baseLibraryUpdate
-                    ? void runLibraryAction('completed', {
-                        ...baseLibraryUpdate,
-                        completed: !libraryEntry?.completed,
-                        watchLater: libraryEntry?.completed ? libraryEntry.watchLater : false,
-                      })
-                    : undefined
-                }
-              >
-                {libraryAction === 'completed' ? (
-                  <>
-                    <LoaderCircle className="spin" size={16} strokeWidth={2} />
-                    Saving...
-                  </>
-                ) : libraryEntry?.completed ? (
-                  'Remove from completed'
-                ) : (
-                  'Mark as completed'
-                )}
-              </button>
-            </div>
-
-            <div className="show-toolbar-row">
-              <div className="show-mode-switch" role="tablist" aria-label="Audio version">
                 <button
-                  className={translationType === 'sub' ? 'active' : ''}
-                  aria-selected={translationType === 'sub'}
-                  role="tab"
+                  className={libraryEntry?.watchLater ? 'show-canvas-chip active' : 'show-canvas-chip'}
+                  disabled={libraryButtonsDisabled}
                   type="button"
-                  onClick={() => setSearchParams({ mode: 'sub' })}
+                  onClick={() =>
+                    baseLibraryUpdate
+                      ? void runLibraryAction('watch-later', {
+                          ...baseLibraryUpdate,
+                          watchLater: !libraryEntry?.watchLater,
+                          completed: false,
+                          removeFromContinueWatching: !libraryEntry?.watchLater && Boolean(libraryEntry?.resumeEpisodeNumber),
+                        })
+                      : undefined
+                  }
                 >
-                  Sub
+                  {libraryAction === 'watch-later' ? (
+                    <>
+                      <LoaderCircle className="spin" size={16} strokeWidth={2} />
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <Bookmark className="show-canvas-chip-icon" size={15} strokeWidth={1.9} />
+                      <span>Watch later</span>
+                    </>
+                  )}
                 </button>
+
                 <button
-                  className={translationType === 'dub' ? 'active' : ''}
-                  aria-selected={translationType === 'dub'}
-                  role="tab"
+                  className={libraryEntry?.completed ? 'show-canvas-chip active' : 'show-canvas-chip'}
+                  disabled={libraryButtonsDisabled}
                   type="button"
-                  onClick={() => setSearchParams({ mode: 'dub' })}
+                  onClick={() =>
+                    baseLibraryUpdate
+                      ? void runLibraryAction('completed', {
+                          ...baseLibraryUpdate,
+                          completed: !libraryEntry?.completed,
+                          watchLater: libraryEntry?.completed ? libraryEntry.watchLater : false,
+                        })
+                      : undefined
+                  }
                 >
-                  Dub
+                  {libraryAction === 'completed' ? (
+                    <>
+                      <LoaderCircle className="spin" size={16} strokeWidth={2} />
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <Check className="show-canvas-chip-icon show-canvas-chip-icon-check" size={15} strokeWidth={2} />
+                      <span>{libraryEntry?.completed ? 'Watched' : 'Mark as watched'}</span>
+                    </>
+                  )}
                 </button>
               </div>
 
-              {show?.genres?.length ? (
-                <div className="show-genre-list">
-                  {show.genres.slice(0, 5).map((genre) => (
-                    <span key={genre}>{genre}</span>
-                  ))}
+              {isRefreshing ? (
+                <div className="show-canvas-meta-tools">
+                  <div className="show-canvas-status">
+                    <LoaderCircle className="spin" size={15} strokeWidth={2} />
+                    Updating {translationType.toUpperCase()} episodes...
+                  </div>
                 </div>
               ) : null}
             </div>
+
           </div>
         </div>
+      </section>
 
-        <section className="show-browser" aria-labelledby="episode-browser-title">
-          <div className="show-browser-head">
-            <div>
-              <h2 id="episode-browser-title">Episode browser</h2>
-              <p>
-                {showCompleted
-                  ? 'This show is marked completed in your library.'
-                  : currentEpisode
-                  ? `You are mid-watch on episode ${currentEpisode.number}.`
-                  : progress?.completedEpisodeCount
-                    ? `${progress.completedEpisodeCount} episodes marked watched so far.`
-                  : 'Start from any episode or jump to the latest release.'}
-              </p>
-            </div>
+      <section className="show-canvas-board">
+        <nav aria-label="Show sections" className="show-canvas-tabs" role="tablist">
+          {SECTION_LINKS.map((section) => (
+            <button
+              key={section.id}
+              aria-controls={`show-panel-${section.id}`}
+              aria-selected={activeSection === section.id}
+              className={activeSection === section.id ? 'show-canvas-tab active' : 'show-canvas-tab'}
+              id={`show-tab-${section.id}`}
+              role="tab"
+              type="button"
+              onClick={() => setActiveSection(section.id)}
+            >
+              {section.label}
+            </button>
+          ))}
+        </nav>
 
-            {isRefreshing ? (
-              <div className="show-loading-chip">
-                <LoaderCircle className="spin" size={15} strokeWidth={2} />
-                <span>Updating {translationType.toUpperCase()} episodes...</span>
-              </div>
-            ) : null}
-
-            {data?.fillerSource ? (
-              <div className="show-filler-note">
-                <Sparkles size={15} strokeWidth={1.8} />
-                <span>
-                  Filler and recap flags matched from {data.fillerSource === 'jikan' ? 'Jikan / MyAnimeList' : data.fillerSource}
-                  {data.fillerMatchTitle ? ` as ${data.fillerMatchTitle}` : ''}.
-                </span>
-              </div>
-            ) : null}
-          </div>
-
-          <div className="show-browser-controls">
-            <label className="show-browser-search">
-              <span className="sr-only">Search episodes</span>
-              <input
-                placeholder="Search episode number or title"
-                type="search"
-                value={episodeQuery}
-                onChange={(event) => setEpisodeQuery(event.target.value)}
-              />
-            </label>
-
-            <div aria-label="Episode filters" className="show-filter-group" role="tablist">
-              {FILTERS.map((filter) => (
-                <button
-                  key={filter.value}
-                  aria-selected={episodeFilter === filter.value}
-                  className={episodeFilter === filter.value ? 'active' : ''}
-                  role="tab"
-                  type="button"
-                  onClick={() => setEpisodeFilter(filter.value)}
-                >
-                  {filter.label}
-                  <span>{filterCounts[filter.value]}</span>
-                </button>
-              ))}
-            </div>
-
-            {ranges.length > 1 ? (
-              <div aria-label="Episode ranges" className="show-range-group" role="tablist">
-                {ranges.map((range) => (
-                  <button
-                    key={range.key}
-                    aria-selected={selectedRangeKey === range.key}
-                    className={selectedRangeKey === range.key ? 'active' : ''}
-                    disabled={episodeFilter !== 'all' || query.length > 0}
-                    role="tab"
-                    type="button"
-                    onClick={() => setSelectedRangeKey(range.key)}
-                  >
-                    {range.label}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </div>
-
-          <div className="show-list-summary">
-            <div>
-              <Filter size={15} strokeWidth={1.8} />
-              <span>
-                Showing {visibleEpisodes.length} of {episodes.length} episodes
-              </span>
-            </div>
-            {activeRange && useRangeFilter ? <span>{activeRange.label}</span> : null}
-          </div>
-
-          <div className="show-episode-list">
-            {visibleEpisodes.map((episode) => (
-              <Link
-                className={`show-episode-row ${episode.isCurrent ? 'current' : ''}`}
-                key={episode.number}
-                to={episodeHref(showId, episode, translationType)}
-              >
-                <div className="show-episode-number">
-                  <strong>{episode.number}</strong>
-                  <span>EP</span>
-                </div>
-
-                <div className="show-episode-copy">
-                  <div className="show-episode-header">
-                    <strong>{episode.title}</strong>
-                    <span>{episodeStatusLabel(episode)}</span>
+        <section
+          aria-hidden={activeSection !== 'overview'}
+          aria-labelledby="show-tab-overview"
+          className={activeSection === 'overview' ? 'show-canvas-stage' : 'show-canvas-stage is-hidden'}
+          hidden={activeSection !== 'overview'}
+          id="show-panel-overview"
+          role="tabpanel"
+        >
+          <div className="show-canvas-overview">
+            <div className="show-canvas-description">
+              {relationRows.length ? (
+                <section className="show-copy-block">
+                  <div className="show-canvas-panel-head">
+                    <h2>Relations</h2>
+                    <span>{relationRows.length} entries</span>
                   </div>
 
-                  {hasEpisodeMeta(episode) ? (
-                    <div className="show-episode-flags">
-                      {episode.progress?.completed ? (
-                        <span className="show-episode-flag show-episode-flag-success">
-                          <Check size={12} strokeWidth={2.1} />
-                          Watched
-                        </span>
-                      ) : null}
-                      {episode.isCurrent ? (
-                        <span className="show-episode-flag show-episode-flag-current">
-                          <Clock3 size={12} strokeWidth={1.9} />
-                          Current
-                        </span>
-                      ) : null}
-                      {episode.annotation?.isFiller ? <span className="show-episode-flag">Filler</span> : null}
-                      {episode.annotation?.isRecap ? <span className="show-episode-flag">Recap</span> : null}
-                      {episode.progress && !episode.progress.completed ? (
-                        <span className="show-episode-flag">
-                          Resume {formatShortTime(episode.progress.currentTime)}
-                        </span>
-                      ) : null}
+                  <div className="show-canvas-discovery-grid">
+                    {relationRows.map((relation) => {
+                      const href = mediaCardHref(relation.providerShowId, relation.siteUrl)
+                      const isAvailableHere = relation.availableOnSite
+                      const isNavigable = href !== null
+                      const meta = [formatLabel(relation.format), buildSeasonLabel(relation.season, relation.year)].filter(Boolean).join(' · ')
+                      const availabilityLabel = !isAvailableHere && relation.siteUrl ? 'External source' : null
+                      const card = (
+                        <>
+                          <img
+                            alt=""
+                            className="show-canvas-discovery-poster"
+                            loading="lazy"
+                            src={relation.posterUrl ?? show?.posterUrl ?? undefined}
+                          />
+                          <div className="show-canvas-discovery-copy">
+                            <div className="show-canvas-discovery-topline">
+                              <span className="show-canvas-discovery-label">{formatLabel(relation.relationType) ?? 'Related'}</span>
+                              {availabilityLabel ? (
+                                <span className={`show-canvas-discovery-availability ${isAvailableHere ? 'is-available' : ''}`}>
+                                  {availabilityLabel}
+                                </span>
+                              ) : null}
+                            </div>
+                            <strong>{relation.title}</strong>
+                            <small>{meta || relation.originalTitle || (isNavigable ? 'Open entry' : 'Unavailable here')}</small>
+                          </div>
+                          <ChevronRight className="show-canvas-discovery-arrow" size={16} strokeWidth={1.9} />
+                        </>
+                      )
+
+                      return href?.startsWith('/shows/') ? (
+                        <Link className="show-canvas-discovery-card" key={`relation-${relation.anilistId}`} to={href}>
+                          {card}
+                        </Link>
+                      ) : href ? (
+                        <a className="show-canvas-discovery-card" href={href} key={`relation-${relation.anilistId}`} rel="noreferrer" target="_blank">
+                          {card}
+                        </a>
+                      ) : (
+                        <div aria-disabled="true" className="show-canvas-discovery-card is-disabled" key={`relation-${relation.anilistId}`}>
+                          {card}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </section>
+              ) : null}
+
+              {recommendationRows.length ? (
+                <section className="show-copy-block">
+                  <div className="show-canvas-panel-head">
+                    <h2>Recommendations</h2>
+                    <span>{recommendationRows.length} picks</span>
+                  </div>
+
+                  <div className="show-canvas-discovery-grid">
+                    {recommendationRows.map((recommendation) => {
+                      const href = mediaCardHref(recommendation.providerShowId, recommendation.siteUrl)
+                      const isAvailableHere = recommendation.availableOnSite
+                      const isNavigable = href !== null
+                      const meta = [formatLabel(recommendation.format), buildSeasonLabel(recommendation.season, recommendation.year)]
+                        .filter(Boolean)
+                        .join(' · ')
+                      const label = recommendation.rating ? `${formatCompactNumber(recommendation.rating)} community upvotes` : 'Recommended'
+                      const availabilityLabel = !isAvailableHere && recommendation.siteUrl ? 'External source' : null
+                      const card = (
+                        <>
+                          <img
+                            alt=""
+                            className="show-canvas-discovery-poster"
+                            loading="lazy"
+                            src={recommendation.posterUrl ?? show?.posterUrl ?? undefined}
+                          />
+                          <div className="show-canvas-discovery-copy">
+                            <div className="show-canvas-discovery-topline">
+                              <span className="show-canvas-discovery-label">{label}</span>
+                              {availabilityLabel ? (
+                                <span className={`show-canvas-discovery-availability ${isAvailableHere ? 'is-available' : ''}`}>
+                                  {availabilityLabel}
+                                </span>
+                              ) : null}
+                            </div>
+                            <strong>{recommendation.title}</strong>
+                            <small>{meta || recommendation.originalTitle || (isNavigable ? 'Open entry' : 'Unavailable here')}</small>
+                          </div>
+                          <ChevronRight className="show-canvas-discovery-arrow" size={16} strokeWidth={1.9} />
+                        </>
+                      )
+
+                      return href?.startsWith('/shows/') ? (
+                        <Link className="show-canvas-discovery-card" key={`recommendation-${recommendation.anilistId}`} to={href}>
+                          {card}
+                        </Link>
+                      ) : href ? (
+                        <a className="show-canvas-discovery-card" href={href} key={`recommendation-${recommendation.anilistId}`} rel="noreferrer" target="_blank">
+                          {card}
+                        </a>
+                      ) : (
+                        <div aria-disabled="true" className="show-canvas-discovery-card is-disabled" key={`recommendation-${recommendation.anilistId}`}>
+                          {card}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </section>
+              ) : null}
+            </div>
+
+            <aside className="show-canvas-details">
+              <section className="show-copy-block">
+                <h2>Details</h2>
+                <dl className="show-canvas-detail-list">
+                  {detailRows.map((row) => (
+                    <div className="show-canvas-detail-row" key={row.label}>
+                      <dt>{row.label}</dt>
+                      <dd>{row.value}</dd>
                     </div>
-                  ) : null}
-
-                  {episode.progress && episode.progress.duration > 0 ? (
-                    <div aria-hidden="true" className="show-episode-progress">
-                      <div
-                        className="show-episode-progress-fill"
-                        style={{
-                          width: `${episode.progress.completed ? 100 : Math.min(100, (episode.progress.currentTime / episode.progress.duration) * 100)}%`,
-                        }}
-                      />
-                    </div>
-                  ) : null}
-                </div>
-
-                <div className="show-episode-action">
-                  <ChevronRight size={16} strokeWidth={1.9} />
-                </div>
-              </Link>
-            ))}
-
-            {!visibleEpisodes.length ? (
-              <div className="empty-state media-empty">
-                No episodes matched this view. Try another filter or clear the search.
-              </div>
-            ) : null}
+                  ))}
+                </dl>
+              </section>
+            </aside>
           </div>
+        </section>
+
+        <section
+          aria-hidden={activeSection !== 'episodes'}
+          aria-labelledby="show-tab-episodes"
+          className={activeSection === 'episodes' ? 'show-canvas-stage show-canvas-stage-episodes' : 'show-canvas-stage show-canvas-stage-episodes is-hidden'}
+          hidden={activeSection !== 'episodes'}
+          id="show-panel-episodes"
+          role="tabpanel"
+        >
+          <section className="show-run-page">
+            <header className="show-run-header">
+              <div className="show-run-summary">
+                <span>{episodeSummaryLabel}</span>
+                {progress?.updatedAt ? <span>Tracking active</span> : null}
+              </div>
+            </header>
+
+            <div className="show-run-layout">
+              <aside className="show-run-side">
+                <div aria-label="Episode filters" className="show-run-filterrail" role="tablist">
+                  {EPISODE_FILTERS.map((filter) => (
+                    <button
+                      key={filter.value}
+                      aria-selected={episodeFilter === filter.value}
+                      className={episodeFilter === filter.value ? 'active' : undefined}
+                      role="tab"
+                      type="button"
+                      onClick={() => setEpisodeFilter(filter.value)}
+                    >
+                      <span>{filter.label}</span>
+                      <strong>{episodeFilterCounts[filter.value]}</strong>
+                    </button>
+                  ))}
+                </div>
+              </aside>
+
+              <div className="show-run-main">
+                <label className="show-run-search" htmlFor="show-episode-search">
+                  <Search aria-hidden="true" size={16} strokeWidth={2} />
+                  <span className="sr-only">Search episodes</span>
+                  <input
+                    id="show-episode-search"
+                    placeholder="Search episode number or title"
+                    type="search"
+                    value={episodeSearch}
+                    onChange={(event) => setEpisodeSearch(event.target.value)}
+                  />
+                </label>
+
+                {filteredEpisodes.length ? (
+                  <div className="show-run-list">
+                    {filteredEpisodes.map((episode) => {
+                      const href = episodeHref(showId, episode, translationType)
+                      const progressPercent = getEpisodeProgressPercent(episode)
+                      const episodeStateLabel = getEpisodeStateLabel(episode)
+                      const metaLine = [
+                        `Episode ${episode.number}`,
+                        formatEpisodeDuration(episode.durationSeconds),
+                        episode.annotation?.isRecap ? 'Recap' : null,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')
+
+                      return (
+                        <Link
+                          className={episode.isCurrent ? 'show-run-entry current' : 'show-run-entry'}
+                          key={episode.number}
+                          to={href}
+                        >
+                          <div className="show-run-copy">
+                            <div className="show-run-meta">
+                              <span>{metaLine}</span>
+                              {episodeStateLabel ? <strong>{episodeStateLabel}</strong> : null}
+                            </div>
+
+                            <div className="show-run-titleline">
+                              <h3>{episode.title}</h3>
+                              <Play aria-hidden="true" size={15} strokeWidth={1.9} />
+                            </div>
+
+                            <div className="show-run-tags">
+                              {episode.annotation?.isFiller ? <span>Filler</span> : null}
+                              {episode.annotation?.isRecap ? <span>Recap</span> : null}
+                              {episode.progress?.completed ? <span>Complete</span> : null}
+                              {episode.annotation?.source === 'jikan' && (episode.annotation?.isFiller || episode.annotation?.isRecap) ? (
+                                <span>Jikan</span>
+                              ) : null}
+                            </div>
+
+                            {progressPercent !== null ? (
+                              <div aria-hidden="true" className="show-run-progress">
+                                <div className="show-run-progress-fill" style={{ width: `${progressPercent}%` }} />
+                              </div>
+                            ) : null}
+                          </div>
+                        </Link>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <div className="show-run-empty">
+                    <h3>No matching episodes</h3>
+                    <p>Try another title search or switch the filter rail back to a broader view.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
         </section>
       </section>
     </section>
@@ -497,100 +728,48 @@ export function ShowPage() {
 
 function ShowPageSkeleton() {
   return (
-    <section aria-busy="true" className="page show-page">
-      <section className="show-shell">
-        <section className="show-overview show-overview-skeleton">
-          <div className="show-overview-art">
-            <div className="loading-skeleton show-overview-poster" />
+    <section aria-busy="true" className="page show-page show-page-v3">
+      <section className="show-canvas-hero show-canvas-hero-skeleton">
+        <div className="show-canvas-hero-inner">
+          <div className="loading-skeleton show-canvas-poster" />
+          <div className="show-canvas-main">
+            <div className="loading-skeleton loading-skeleton-line show-canvas-skeleton-overline" />
+            <div className="loading-skeleton loading-skeleton-title show-canvas-skeleton-title" />
+            <div className="loading-skeleton loading-skeleton-line show-canvas-skeleton-score" />
+            <div className="loading-skeleton loading-skeleton-button show-canvas-skeleton-button" />
           </div>
+        </div>
+      </section>
 
-          <div className="show-overview-copy">
-            <div className="show-kicker">
-              <div className="loading-skeleton loading-skeleton-chip" />
-              <div className="loading-skeleton loading-skeleton-chip" />
-              <div className="loading-skeleton loading-skeleton-chip" />
-            </div>
+      <section className="show-canvas-board">
+        <div className="show-canvas-tabs">
+          {SECTION_LINKS.map((section) => (
+            <div className="loading-skeleton loading-skeleton-chip" key={section.id} />
+          ))}
+        </div>
 
-            <div className="loading-skeleton loading-skeleton-title show-skeleton-title" />
-            <div className="loading-skeleton loading-skeleton-line show-skeleton-line" />
-            <div className="loading-skeleton loading-skeleton-line show-skeleton-line show-skeleton-line-short" />
-
-            <div className="show-metadata-strip">
-              {Array.from({ length: 4 }, (_, index) => (
-                <div key={index}>
-                  <div className="loading-skeleton loading-skeleton-line show-skeleton-stat-label" />
-                  <div className="loading-skeleton loading-skeleton-line show-skeleton-stat-value" />
-                </div>
-              ))}
-            </div>
-
-            <div className="show-actions">
-              <div className="loading-skeleton loading-skeleton-button" />
-              <div className="loading-skeleton loading-skeleton-button loading-skeleton-button-secondary" />
-              <div className="loading-skeleton loading-skeleton-button loading-skeleton-button-secondary" />
-            </div>
-          </div>
-        </section>
-
-        <section className="show-browser show-browser-skeleton">
-          <div className="show-browser-head">
-            <div>
+        <section className="show-canvas-stage">
+          <div className="show-canvas-overview">
+            <div className="show-canvas-description">
               <div className="loading-skeleton loading-skeleton-line show-skeleton-section-title" />
-              <div className="loading-skeleton loading-skeleton-line show-skeleton-line" />
-            </div>
-          </div>
-
-          <div className="show-browser-controls">
-            <div className="loading-skeleton show-skeleton-input" />
-            <div className="show-filter-group">
-              {Array.from({ length: 5 }, (_, index) => (
-                <div className="loading-skeleton loading-skeleton-chip show-skeleton-filter" key={index} />
+              {Array.from({ length: 4 }, (_, index) => (
+                <div className="loading-skeleton loading-skeleton-line show-skeleton-copy" key={index} />
               ))}
             </div>
-          </div>
-
-          <div className="show-episode-list">
-            {Array.from({ length: 8 }, (_, index) => (
-              <div className="show-episode-row show-episode-row-skeleton" key={index}>
-                <div className="loading-skeleton show-skeleton-episode-number" />
-                <div className="show-episode-copy">
-                  <div className="loading-skeleton loading-skeleton-line show-skeleton-episode-title" />
-                  <div className="loading-skeleton loading-skeleton-line show-skeleton-episode-meta" />
+            <div className="show-canvas-details">
+              <div className="loading-skeleton loading-skeleton-line show-skeleton-section-title" />
+              {Array.from({ length: 6 }, (_, index) => (
+                <div className="show-canvas-detail-row" key={index}>
+                  <div className="loading-skeleton loading-skeleton-line show-skeleton-detail-key" />
+                  <div className="loading-skeleton loading-skeleton-line show-skeleton-detail-value" />
                 </div>
-                <div className="loading-skeleton show-skeleton-episode-arrow" />
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
         </section>
       </section>
     </section>
   )
-}
-
-function buildEpisodeRanges(episodes: ShowEpisode[]) {
-  if (episodes.length <= EPISODES_PER_RANGE) {
-    return [
-      {
-        key: 'all',
-        label: 'All episodes',
-        episodeNumbers: new Set(episodes.map((episode) => episode.number)),
-      },
-    ]
-  }
-
-  const ranges: Array<{ key: string; label: string; episodeNumbers: Set<string> }> = []
-  for (let index = 0; index < episodes.length; index += EPISODES_PER_RANGE) {
-    const slice = episodes.slice(index, index + EPISODES_PER_RANGE)
-    const first = slice[0]?.number ?? String(index + 1)
-    const last = slice[slice.length - 1]?.number ?? String(index + slice.length)
-    ranges.push({
-      key: `${first}-${last}`,
-      label: `${first}-${last}`,
-      episodeNumbers: new Set(slice.map((episode) => episode.number)),
-    })
-  }
-
-  return ranges
 }
 
 function episodeHref(showId: string, episode: ShowEpisode, translationType: TranslationType) {
@@ -602,53 +781,312 @@ function episodeHref(showId: string, episode: ShowEpisode, translationType: Tran
   return baseHref
 }
 
-function episodeStatusLabel(episode: ShowEpisode) {
-  if (episode.isCurrent) {
-    return 'Currently watching'
+function formatLabel(value: string | null | undefined) {
+  if (!value) {
+    return null
   }
 
-  if (episode.progress?.completed) {
-    return 'Completed'
-  }
-
-  if (episode.progress) {
-    return 'In progress'
-  }
-
-  return 'Not started'
-}
-
-function hasEpisodeMeta(episode: ShowEpisode) {
-  return Boolean(
-    episode.progress?.completed ||
-      episode.isCurrent ||
-      episode.annotation?.isFiller ||
-      episode.annotation?.isRecap ||
-      (episode.progress && !episode.progress.completed),
-  )
-}
-
-function formatShortTime(totalSeconds: number) {
-  if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) {
-    return '0:00'
-  }
-
-  const rounded = Math.floor(totalSeconds)
-  const hours = Math.floor(rounded / 3600)
-  const minutes = Math.floor((rounded % 3600) / 60)
-  const seconds = rounded % 60
-
-  if (hours > 0) {
-    return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
-  }
-
-  return `${minutes}:${String(seconds).padStart(2, '0')}`
-}
-
-function toTitleCase(value: string) {
   return value
     .split(/[_\s]+/)
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
     .join(' ')
+}
+
+function formatStatus(value: string | null | undefined) {
+  const label = formatLabel(value)
+  if (!label) {
+    return null
+  }
+
+  return label.replace('Releasing', 'Ongoing')
+}
+
+function buildSeasonLabel(season: string | null | undefined, year: number | null | undefined) {
+  const seasonLabel = formatLabel(season)
+  if (seasonLabel && year) {
+    return `${seasonLabel} ${year}`
+  }
+
+  if (seasonLabel) {
+    return seasonLabel
+  }
+
+  if (year) {
+    return String(year)
+  }
+
+  return null
+}
+
+function formatDate(date: ShowPageAniListDetails['startDate']) {
+  if (!date?.year) {
+    return null
+  }
+
+  const month = date.month ? new Date(Date.UTC(date.year, date.month - 1, 1)).toLocaleString(undefined, { month: 'short' }) : null
+  if (month && date.day) {
+    return `${month} ${date.day}, ${date.year}`
+  }
+
+  if (month) {
+    return `${month} ${date.year}`
+  }
+
+  return String(date.year)
+}
+
+function formatNumber(value: number | null | undefined) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return null
+  }
+
+  return value.toLocaleString()
+}
+
+function formatScore(value: number | null | undefined) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return null
+  }
+
+  return `${value}`
+}
+
+function formatCompactNumber(value: number | null | undefined) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return null
+  }
+
+  return new Intl.NumberFormat('en', {
+    notation: 'compact',
+    maximumFractionDigits: value >= 100000 ? 0 : 1,
+  }).format(value)
+}
+
+function getAverageEpisodeDuration(episodes: ShowEpisode[]) {
+  const durations = episodes
+    .map((episode) => episode.durationSeconds)
+    .filter((value): value is number => typeof value === 'number' && value > 0)
+
+  if (!durations.length) {
+    return null
+  }
+
+  return Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length / 60)
+}
+
+function getAudienceAmount(details: ShowPageAniListDetails | null, status: AudienceStatus) {
+  return details?.audienceStats.find((entry) => entry.status === status)?.amount ?? 0
+}
+
+function audienceStatusLabel(status: AudienceStatus) {
+  switch (status) {
+    case 'CURRENT':
+      return 'Watching'
+    case 'PLANNING':
+      return 'Planning'
+    case 'COMPLETED':
+      return 'Completed'
+    case 'PAUSED':
+      return 'Paused'
+    case 'DROPPED':
+      return 'Dropped'
+  }
+}
+
+function formatRankingHeadline(rank: number, type: string) {
+  const normalizedType = type.toUpperCase()
+  if (normalizedType === 'RATED') {
+    return `#${rank} rated`
+  }
+
+  if (normalizedType === 'POPULAR') {
+    return `#${rank} popular`
+  }
+
+  return `#${rank} ${formatLabel(type)?.toLowerCase() ?? 'ranked'}`
+}
+
+function buildHeroRankingTags(rank: number | null, popularity: number | null) {
+  const tags: Array<{ kind: 'rated' | 'popular'; label: string }> = []
+
+  if (typeof rank === 'number' && Number.isFinite(rank) && rank > 0) {
+    tags.push({
+      kind: 'rated',
+      label: `Rated #${rank}`,
+    })
+  }
+
+  if (typeof popularity === 'number' && Number.isFinite(popularity) && popularity > 0) {
+    tags.push({
+      kind: 'popular',
+      label: `Popular #${popularity}`,
+    })
+  }
+
+  return tags
+}
+
+function buildHeroTaxonomyItems(genres: string[], tags: Array<{ name: string }>) {
+  const items: Array<{ key: string; kind: 'genre' | 'tag'; label: string }> = []
+
+  genres.slice(0, 3).forEach((genre) => {
+    items.push({
+      key: `genre-${genre}`,
+      kind: 'genre',
+      label: genre,
+    })
+  })
+
+  tags.slice(0, 2).forEach((tag) => {
+    items.push({
+      key: `tag-${tag.name}`,
+      kind: 'tag',
+      label: `#${tag.name}`,
+    })
+  })
+
+  const remaining = Math.max(0, genres.length - 3) + Math.max(0, tags.length - 2)
+  if (remaining > 0) {
+    items.push({
+      key: 'taxonomy-more',
+      kind: 'tag',
+      label: `+${remaining}`,
+    })
+  }
+
+  return items
+}
+
+function buildHeroAudienceItems(stats: Array<{ status: AudienceStatus; label: string; amount: number }>) {
+  return ['CURRENT', 'PLANNING', 'COMPLETED']
+    .map((status) => stats.find((item) => item.status === status))
+    .filter((item): item is { status: AudienceStatus; label: string; amount: number } => Boolean(item && item.amount > 0))
+    .map((item) => ({
+      label: item.status === 'CURRENT' ? 'watching' : item.label.toLowerCase(),
+      tone: item.status === 'CURRENT' ? 'watching' : item.status === 'PLANNING' ? 'planning' : 'completed',
+      value: formatCompactNumber(item.amount) ?? '0',
+    }))
+}
+
+function mediaCardHref(providerShowId: string | null, siteUrl: string | null) {
+  if (providerShowId) {
+    return `/shows/${providerShowId}`
+  }
+
+  return siteUrl ?? null
+}
+
+function buildAiringStatusTag(status: string | null | undefined) {
+  const normalized = status?.trim().toUpperCase()
+  if (!normalized) {
+    return null
+  }
+
+  if (normalized === 'FINISHED' || normalized === 'FINISHED_AIRING') {
+    return 'Finished'
+  }
+
+  if (normalized === 'RELEASING' || normalized === 'CURRENTLY_AIRING') {
+    return 'Airing'
+  }
+
+  return formatStatus(normalized)
+}
+
+function pickNativeTitle(...values: Array<string | null | undefined>) {
+  return values.find((value) => containsJapaneseText(value ?? ''))?.trim() ?? null
+}
+
+function pickRomajiTitle(...values: Array<string | null | undefined>) {
+  return values.find((value) => isLikelyRomajiTitle(value ?? ''))?.trim() ?? null
+}
+
+function containsJapaneseText(value: string) {
+  return /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]/.test(value)
+}
+
+function isLikelyRomajiTitle(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed || containsJapaneseText(trimmed)) {
+    return false
+  }
+
+  return /[A-Za-z]/.test(trimmed)
+}
+
+function buildUpdatedLibraryEntry(current: LibraryEntry | null, input: LibraryUpdateInput): LibraryEntry {
+  const watchLater = input.watchLater ?? current?.watchLater ?? false
+  const completed = input.completed ?? current?.completed ?? false
+
+  return {
+    showId: input.showId,
+    title: input.title,
+    posterUrl: input.posterUrl ?? current?.posterUrl ?? null,
+    latestEpisodeNumber: current?.latestEpisodeNumber ?? null,
+    resumeEpisodeNumber: input.removeFromContinueWatching ? null : current?.resumeEpisodeNumber ?? null,
+    resumeTime: input.removeFromContinueWatching ? 0 : current?.resumeTime ?? 0,
+    updatedAt: current?.updatedAt ?? new Date().toISOString(),
+    favorited: input.favorited ?? current?.favorited ?? false,
+    watchLater,
+    completed,
+    completedAt: completed ? current?.completedAt ?? new Date().toISOString() : null,
+  }
+}
+
+function getEpisodeProgressPercent(episode: ShowEpisode) {
+  if (!episode.progress) {
+    return null
+  }
+
+  if (episode.progress.completed) {
+    return 100
+  }
+
+  if (episode.progress.duration <= 0) {
+    return null
+  }
+
+  return Math.max(0, Math.min(100, Math.round((episode.progress.currentTime / episode.progress.duration) * 100)))
+}
+
+function getEpisodeStateLabel(episode: ShowEpisode) {
+  if (episode.isCurrent) {
+    return 'Up next'
+  }
+
+  if (episode.progress?.completed) {
+    return 'Watched'
+  }
+
+  if (episode.progress && episode.progress.currentTime > 0) {
+    return `In progress ${getEpisodeProgressPercent(episode) ?? 0}%`
+  }
+
+  return null
+}
+
+function formatEpisodeDuration(durationSeconds: number | null | undefined) {
+  if (!durationSeconds || durationSeconds <= 0) {
+    return null
+  }
+
+  return `${Math.round(durationSeconds / 60)} min`
+}
+
+function buildEpisodeSummaryLabel(input: {
+  visibleEpisodeCount: number
+  totalEpisodeCount: number
+  searchTerm: string
+  filter: EpisodeFilter
+}) {
+  if (!input.totalEpisodeCount) {
+    return 'No episodes available yet.'
+  }
+
+  if (input.visibleEpisodeCount === input.totalEpisodeCount && !input.searchTerm && input.filter === 'all') {
+    return `Showing all ${input.totalEpisodeCount} episodes.`
+  }
+
+  return `Showing ${input.visibleEpisodeCount} of ${input.totalEpisodeCount} episodes.`
 }

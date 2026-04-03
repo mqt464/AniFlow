@@ -1,7 +1,7 @@
 import type { AniListConnection, DiscoverShow, HomePayload, ShowSummary, TrailerAsset } from '../../../shared/contracts.js'
 import type { AppEnv } from '../env.js'
 import { type AniListSyncSnapshot, AniFlowDatabase } from '../lib/database.js'
-import { nowIso, normalizeTitle, stripHtml } from '../lib/utils.js'
+import { cleanSynopsis, nowIso, normalizeTitle, stripHtml } from '../lib/utils.js'
 import { AllAnimeAdapter } from './provider/allAnimeAdapter.js'
 
 interface AniListViewer {
@@ -795,7 +795,7 @@ export class AniListService {
       originalTitle: media.title?.native?.trim() || media.title?.romaji?.trim() || null,
       bannerUrl: media.bannerImage ?? null,
       posterUrl: media.coverImage?.extraLarge ?? media.coverImage?.large ?? null,
-      description: stripHtml(media.description),
+      description: cleanSynopsis(media.description),
       genres: media.genres ?? [],
       status: media.status ?? null,
       year: media.seasonYear ?? null,

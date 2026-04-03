@@ -20,13 +20,17 @@ import type {
 import { translationTypes } from '../../shared/contracts.js'
 import type { AppEnv } from './env.js'
 import { AniFlowDatabase } from './lib/database.js'
-import { nowIso } from './lib/utils.js'
+import { nowIso, withTimeout } from './lib/utils.js'
 import { AniListService } from './services/aniListService.js'
 import { AniSkipService } from './services/aniSkipService.js'
 import { JikanService } from './services/jikanService.js'
 import { LocalSkipService } from './services/localSkipService.js'
 import { AllAnimeAdapter } from './services/provider/allAnimeAdapter.js'
 import { ProxySessionStore } from './services/proxySessionStore.js'
+
+export const PLAYBACK_RESOLVE_TIMEOUT_MS = 12_000
+export const PLAYBACK_METADATA_TIMEOUT_MS = 5_000
+export const PLAYBACK_SKIP_TIMEOUT_MS = 4_000
 
 const progressSchema = z.object({
   showId: z.string().min(1),
@@ -132,13 +136,16 @@ export function buildApp(env: AppEnv) {
       'sub') as TranslationType
 
     const [show, episodes] = await Promise.all([provider.getShow(id), provider.getEpisodes(id, translationType)])
-    const [progressByEpisode, progressSummary, annotations] = await Promise.all([
+    const [aniListDetails, progressByEpisode, progressSummary, annotations] = await Promise.all([
+      provider.getAniListDetails(show).catch(() => null),
       Promise.resolve(database.getShowEpisodeProgress(id)),
       Promise.resolve(database.getShowProgressSummary(id)),
       jikan.getEpisodeAnnotations(show).catch(() => ({
         annotations: {},
         titles: {},
         matchedTitle: null,
+        rank: null,
+        popularity: null,
       })),
     ])
     const episodeAnnotations = annotations.annotations as Record<string, EpisodeAnnotation>
@@ -146,6 +153,7 @@ export function buildApp(env: AppEnv) {
 
     return {
       show,
+      aniListDetails,
       translationType,
       episodes: episodes.map((episode) => ({
         ...episode,
@@ -158,6 +166,8 @@ export function buildApp(env: AppEnv) {
       library: database.getLibraryEntry(id),
       fillerSource: annotations.matchedTitle ? 'jikan' : null,
       fillerMatchTitle: annotations.matchedTitle,
+      malRank: annotations.rank,
+      malPopularity: annotations.popularity,
     }
   })
 
@@ -172,11 +182,23 @@ export function buildApp(env: AppEnv) {
 
   app.post('/api/playback/resolve', async (request): Promise<ResolvedStream> => {
     const input = playbackSchema.parse(request.body) as PlaybackResolveInput
-    const [show, episodes, candidate] = await Promise.all([
+    const translationType = input.translationType ?? 'sub'
+    const showPromise = withTimeout(
       provider.getShow(input.showId),
-      provider.getEpisodes(input.showId, input.translationType ?? 'sub'),
-      provider.resolvePlayback(input.showId, input.episodeNumber, input.translationType ?? 'sub'),
-    ])
+      PLAYBACK_METADATA_TIMEOUT_MS,
+      'Timed out loading playback show details',
+    ).catch(() => null)
+    const episodesPromise = withTimeout(
+      provider.getEpisodes(input.showId, translationType),
+      PLAYBACK_METADATA_TIMEOUT_MS,
+      'Timed out loading playback episode list',
+    ).catch(() => [])
+    const candidate = await withTimeout(
+      provider.resolvePlayback(input.showId, input.episodeNumber, translationType),
+      PLAYBACK_RESOLVE_TIMEOUT_MS,
+      'Timed out resolving this stream',
+    )
+    const [show, episodes] = await Promise.all([showPromise, episodesPromise])
 
     const mainSession = proxySessions.create({
       targetUrl: candidate.url,
@@ -191,42 +213,31 @@ export function buildApp(env: AppEnv) {
         })
       : null
 
-    const aniSkipSegments = await aniSkip.getSegments(
-      show.title,
-      input.episodeNumber,
-      null,
-      show.originalTitle ? [show.originalTitle] : [],
-    )
-    const localFallbackNeeded =
-      !hasSkipSegment(aniSkipSegments, 'Skip intro') || !hasSkipSegment(aniSkipSegments, 'Skip outro')
-    const skipSegments = localFallbackNeeded
-      ? mergeSkipSegments(
-          aniSkipSegments,
-          await localSkip.getSegments({
-            showId: input.showId,
-            episodeNumber: input.episodeNumber,
-            translationType: input.translationType ?? 'sub',
-            subtitleUrl: candidate.subtitleUrl,
-            subtitleMimeType: candidate.subtitleMimeType,
-            streamUrl: candidate.url,
-            headers: candidate.headers,
-            referenceStreams: await resolveReferenceStreams(
+    const skipSegments =
+      show && episodes.length > 0
+        ? await withTimeout(
+            resolvePlaybackSkipSegments({
+              aniSkip,
+              localSkip,
               provider,
-              input.showId,
-              input.translationType ?? 'sub',
+              input,
+              show,
+              candidate,
               episodes,
-              input.episodeNumber,
-            ),
-          }),
-        )
-      : aniSkipSegments
-    const nextEpisodeNumber = provider.getNextEpisodeNumber(episodes, input.episodeNumber)
+              translationType,
+            }),
+            PLAYBACK_SKIP_TIMEOUT_MS,
+            'Timed out loading playback markers',
+          ).catch(() => [])
+        : []
+    const nextEpisodeNumber = episodes.length > 0 ? provider.getNextEpisodeNumber(episodes, input.episodeNumber) : null
+    const showTitle = show?.title ?? input.showId
 
     return {
       showId: input.showId,
       episodeNumber: input.episodeNumber,
-      translationType: input.translationType ?? 'sub',
-      showTitle: show.title,
+      translationType,
+      showTitle,
       streamUrl: `/api/playback/proxy/${mainSession.id}`,
       mimeType: candidate.mimeType,
       subtitleUrl: subtitleSession ? `/api/playback/proxy/${subtitleSession.id}` : null,
@@ -240,7 +251,7 @@ export function buildApp(env: AppEnv) {
       ],
       skipSegments,
       nextEpisodeNumber,
-      title: `${show.title} • Episode ${input.episodeNumber}`,
+      title: `${showTitle} • Episode ${input.episodeNumber}`,
     }
   })
 
@@ -363,6 +374,54 @@ function mergeSkipSegments(primary: ResolvedStream['skipSegments'], fallback: Re
   }
 
   return [...byLabel.values()].sort((left, right) => left.startTime - right.startTime)
+}
+
+async function resolvePlaybackSkipSegments(input: {
+  aniSkip: AniSkipService
+  localSkip: LocalSkipService
+  provider: AllAnimeAdapter
+  input: PlaybackResolveInput
+  show: { title: string; originalTitle: string | null }
+  candidate: {
+    url: string
+    headers: Record<string, string>
+    subtitleUrl: string | null
+    subtitleMimeType: string | null
+  }
+  episodes: Array<{ number: string }>
+  translationType: TranslationType
+}): Promise<ResolvedStream['skipSegments']> {
+  const aniSkipSegments = await input.aniSkip.getSegments(
+    input.show.title,
+    input.input.episodeNumber,
+    null,
+    input.show.originalTitle ? [input.show.originalTitle] : [],
+  )
+  const localFallbackNeeded =
+    !hasSkipSegment(aniSkipSegments, 'Skip intro') || !hasSkipSegment(aniSkipSegments, 'Skip outro')
+  if (!localFallbackNeeded) {
+    return aniSkipSegments
+  }
+
+  return mergeSkipSegments(
+    aniSkipSegments,
+    await input.localSkip.getSegments({
+      showId: input.input.showId,
+      episodeNumber: input.input.episodeNumber,
+      translationType: input.translationType,
+      subtitleUrl: input.candidate.subtitleUrl,
+      subtitleMimeType: input.candidate.subtitleMimeType,
+      streamUrl: input.candidate.url,
+      headers: input.candidate.headers,
+      referenceStreams: await resolveReferenceStreams(
+        input.provider,
+        input.input.showId,
+        input.translationType,
+        input.episodes,
+        input.input.episodeNumber,
+      ),
+    }),
+  )
 }
 
 async function resolveReferenceStreams(
