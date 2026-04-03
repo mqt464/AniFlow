@@ -1911,6 +1911,53 @@ describe('PlayerPage', () => {
     expect(video!.currentTime).toBe(422)
   })
 
+  it('does not reload the video source when local progress updates during playback', async () => {
+    const loadSpy = vi.spyOn(HTMLMediaElement.prototype, 'load')
+    vi.spyOn(globalThis, 'fetch').mockImplementation(createPlayerFetchMock())
+
+    const { container } = render(
+      <SessionContext.Provider value={sessionValue}>
+        <MemoryRouter initialEntries={['/player/demo-show/1']}>
+          <Routes>
+            <Route path="/player/:showId/:episodeNumber" element={<PlayerPage />} />
+          </Routes>
+        </MemoryRouter>
+      </SessionContext.Provider>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Episode 1 • Arrival')).toBeInTheDocument()
+    })
+
+    const video = container.querySelector('video')
+    expect(video).not.toBeNull()
+
+    Object.defineProperty(video!, 'duration', {
+      configurable: true,
+      value: 1440,
+    })
+    Object.defineProperty(video!, 'currentTime', {
+      configurable: true,
+      writable: true,
+      value: 0,
+    })
+
+    await act(async () => {
+      fireEvent(video!, new Event('loadedmetadata'))
+      fireEvent(video!, new Event('canplay'))
+      fireEvent(video!, new Event('durationchange'))
+    })
+
+    const loadCallsBeforeProgressUpdate = loadSpy.mock.calls.length
+
+    await act(async () => {
+      video!.currentTime = 1
+      fireEvent(video!, new Event('timeupdate'))
+    })
+
+    expect(loadSpy.mock.calls.length).toBe(loadCallsBeforeProgressUpdate)
+  })
+
   it('persists progress when the tab is hidden and resumes from that snapshot after a refresh', async () => {
     const progressRequests: Array<{ body: Record<string, unknown>; init: RequestInit | undefined }> = []
     const originalVisibilityState = document.visibilityState

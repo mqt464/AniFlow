@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AppEnv } from '../env.js'
 import { AniFlowDatabase } from '../lib/database.js'
 import { AniListService } from './aniListService.js'
+import type { AllAnimeAdapter } from './provider/allAnimeAdapter.js'
 
 const tempDirs: string[] = []
 
@@ -42,6 +43,7 @@ function createEnv(): AppEnv {
     aniListClientSecret: null,
     aniListRedirectUri: null,
     cacheTtlMs: 1000,
+    aniListGraphqlMinIntervalMs: 0,
   }
 }
 
@@ -311,6 +313,12 @@ describe('AniListService', () => {
               data: {
                 Media: {
                   id: media.id,
+                  title: {
+                    english: search,
+                    romaji: search,
+                    native: search,
+                  },
+                  synonyms: [search],
                   episodes: media.episodes,
                   isFavourite: false,
                   mediaListEntry: null,
@@ -480,6 +488,276 @@ describe('AniListService', () => {
           last_error: 'AniList could not match this title',
         },
       ])
+    } finally {
+      database.close()
+    }
+  })
+
+  it('uses provider titles to find an AniList match when the stored library title is not enough', async () => {
+    const env = createEnv()
+    const database = new AniFlowDatabase(env.dbPath)
+    const provider = {
+      getShow: vi.fn(async () => ({
+        id: 'show-1',
+        title: 'Attack on Titan Final Season',
+        originalTitle: 'Shingeki no Kyojin',
+      })),
+    } as unknown as AllAnimeAdapter
+    const service = new AniListService(env, database, provider)
+
+    database.updateLibraryEntry({
+      showId: 'show-1',
+      title: 'AOT Final',
+      watchLater: true,
+    })
+    database.setAniListConnection({
+      viewerId: 7,
+      username: 'mat',
+      avatarUrl: null,
+      bannerUrl: null,
+      profileUrl: 'https://anilist.co/user/mat',
+      about: null,
+      accessToken: 'token',
+      refreshToken: null,
+      lastPullAt: null,
+      lastSyncStatus: 'Connected',
+    })
+
+    try {
+      const saveCalls: Array<{ mediaId: number; status: string | null }> = []
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input)
+        const bodyText = typeof init?.body === 'string' ? init.body : input instanceof Request ? await input.text() : '{}'
+        const body = JSON.parse(bodyText) as { query?: string; variables?: Record<string, unknown> }
+
+        if (!url.startsWith('https://graphql.anilist.co')) {
+          throw new Error(`Unexpected fetch: ${url}`)
+        }
+
+        if (body.query?.includes('ImportAniList')) {
+          return new Response(
+            JSON.stringify({
+              data: {
+                Viewer: {
+                  id: 7,
+                  name: 'mat',
+                  siteUrl: 'https://anilist.co/user/mat',
+                  about: null,
+                  bannerImage: null,
+                  avatar: { large: null },
+                  favourites: { anime: { nodes: [] } },
+                },
+                MediaListCollection: {
+                  lists: [],
+                },
+              },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+
+        if (body.query?.includes('LookupAniListMedia')) {
+          const search = String(body.variables?.search ?? '')
+          if (search === 'AOT Final') {
+            return new Response(
+              JSON.stringify({
+                data: {
+                  Media: null,
+                },
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } },
+            )
+          }
+
+          if (search === 'Attack on Titan Final Season' || search === 'Shingeki no Kyojin') {
+            return new Response(
+              JSON.stringify({
+                data: {
+                  Media: {
+                    id: 204,
+                    title: {
+                      english: 'Attack on Titan Final Season',
+                      romaji: 'Shingeki no Kyojin',
+                      native: '進撃の巨人',
+                    },
+                    synonyms: ['AOT'],
+                    episodes: 12,
+                    isFavourite: false,
+                    mediaListEntry: null,
+                  },
+                },
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } },
+            )
+          }
+        }
+
+        if (body.query?.includes('SaveAniListEntry')) {
+          saveCalls.push({
+            mediaId: Number(body.variables?.mediaId),
+            status: typeof body.variables?.status === 'string' ? body.variables.status : null,
+          })
+          return new Response(
+            JSON.stringify({
+              data: {
+                SaveMediaListEntry: {
+                  id: 1,
+                },
+              },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+
+        if (body.query?.includes('ToggleAniListFavourite')) {
+          return new Response(
+            JSON.stringify({
+              data: {
+                ToggleFavourite: {
+                  anime: {
+                    nodes: [],
+                  },
+                },
+              },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+
+        throw new Error(`Unexpected AniList query: ${body.query}`)
+      })
+
+      await service.syncNow()
+
+      expect(provider.getShow).toHaveBeenCalledWith('show-1')
+      expect(saveCalls).toEqual([{ mediaId: 204, status: 'PLANNING' }])
+    } finally {
+      database.close()
+    }
+  })
+
+  it('falls back to title lookup when a stored AniList media id returns 404', async () => {
+    const env = createEnv()
+    const database = new AniFlowDatabase(env.dbPath)
+    const service = new AniListService(env, database, {} as never)
+
+    database.updateLibraryEntry({
+      showId: 'stale-id-show',
+      title: 'Stale Id Show',
+      watchLater: true,
+    })
+    database.setLibraryAniListMediaId('stale-id-show', 999999)
+    database.setAniListConnection({
+      viewerId: 7,
+      username: 'mat',
+      avatarUrl: null,
+      bannerUrl: null,
+      profileUrl: 'https://anilist.co/user/mat',
+      about: null,
+      accessToken: 'token',
+      refreshToken: null,
+      lastPullAt: null,
+      lastSyncStatus: 'Connected',
+    })
+
+    try {
+      const saveCalls: Array<{ mediaId: number; status: string | null }> = []
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input)
+        const bodyText = typeof init?.body === 'string' ? init.body : input instanceof Request ? await input.text() : '{}'
+        const body = JSON.parse(bodyText) as { query?: string; variables?: Record<string, unknown> }
+
+        if (!url.startsWith('https://graphql.anilist.co')) {
+          throw new Error(`Unexpected fetch: ${url}`)
+        }
+
+        if (body.query?.includes('ImportAniList')) {
+          return new Response(
+            JSON.stringify({
+              data: {
+                Viewer: {
+                  id: 7,
+                  name: 'mat',
+                  siteUrl: 'https://anilist.co/user/mat',
+                  about: null,
+                  bannerImage: null,
+                  avatar: { large: null },
+                  favourites: { anime: { nodes: [] } },
+                },
+                MediaListCollection: {
+                  lists: [],
+                },
+              },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+
+        if (body.query?.includes('LookupAniListMediaById')) {
+          return new Response('Not found', { status: 404 })
+        }
+
+        if (body.query?.includes('LookupAniListMedia')) {
+          return new Response(
+            JSON.stringify({
+              data: {
+                Media: {
+                  id: 208,
+                  title: {
+                    english: 'Stale Id Show',
+                    romaji: 'Stale Id Show',
+                    native: 'Stale Id Show',
+                  },
+                  synonyms: [],
+                  episodes: 10,
+                  isFavourite: false,
+                  mediaListEntry: null,
+                },
+              },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+
+        if (body.query?.includes('SaveAniListEntry')) {
+          saveCalls.push({
+            mediaId: Number(body.variables?.mediaId),
+            status: typeof body.variables?.status === 'string' ? body.variables.status : null,
+          })
+          return new Response(
+            JSON.stringify({
+              data: {
+                SaveMediaListEntry: {
+                  id: 1,
+                },
+              },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+
+        if (body.query?.includes('ToggleAniListFavourite')) {
+          return new Response(
+            JSON.stringify({
+              data: {
+                ToggleFavourite: {
+                  anime: {
+                    nodes: [],
+                  },
+                },
+              },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+
+        throw new Error(`Unexpected AniList query: ${body.query}`)
+      })
+
+      await service.syncNow()
+
+      expect(saveCalls).toEqual([{ mediaId: 208, status: 'PLANNING' }])
+      expect(database.getAniListSyncSnapshot('stale-id-show')?.anilistMediaId).toBe(208)
     } finally {
       database.close()
     }

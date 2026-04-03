@@ -49,6 +49,12 @@ interface AniListMediaLookupResponse {
   data?: {
     Media?: {
       id: number
+      title?: {
+        english?: string | null
+        romaji?: string | null
+        native?: string | null
+      } | null
+      synonyms?: string[] | null
       episodes?: number | null
       isFavourite?: boolean | null
       mediaListEntry?: AniListMediaListEntry | null
@@ -108,7 +114,6 @@ type AniListSeason = 'WINTER' | 'SPRING' | 'SUMMER' | 'FALL'
 
 const BACKGROUND_IMPORT_INTERVAL_MS = 10 * 60 * 1000
 const ANILIST_GRAPHQL_ENDPOINTS = ['https://graphql.anilist.co', 'https://graphql.anilist.co/'] as const
-const ANILIST_GRAPHQL_MIN_INTERVAL_MS = 750
 const ANILIST_GRAPHQL_MAX_RETRIES = 4
 
 interface FlushPendingResult {
@@ -342,35 +347,24 @@ export class AniListService {
     let pushedCount = 0
     let failedCount = 0
     let lastError: string | null = null
-    while (true) {
-      const jobs = this.database.takePendingAniListJobs(5)
-      if (jobs.length === 0) {
-        break
-      }
+    const jobs = this.database.takePendingAniListJobs(1000)
 
-      let batchHadFailure = false
-      for (const job of jobs) {
-        try {
-          if (job.action !== 'state') {
-            this.database.completeAniListJob(job.id)
-            continue
-          }
-
-          const payload = JSON.parse(job.payload) as AniListSyncSnapshot
-          await this.syncSnapshotToAniList(payload, connection.accessToken)
+    for (const job of jobs) {
+      try {
+        if (job.action !== 'state') {
           this.database.completeAniListJob(job.id)
-          pushedCount += 1
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'AniList sync failed'
-          this.database.failAniListJob(job.id, message)
-          failedCount += 1
-          lastError = message
-          batchHadFailure = true
+          continue
         }
-      }
 
-      if (batchHadFailure) {
-        break
+        const payload = JSON.parse(job.payload) as AniListSyncSnapshot
+        await this.syncSnapshotToAniList(payload, connection.accessToken)
+        this.database.completeAniListJob(job.id)
+        pushedCount += 1
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'AniList sync failed'
+        this.database.failAniListJob(job.id, message)
+        failedCount += 1
+        lastError = message
       }
     }
 
@@ -602,27 +596,104 @@ export class AniListService {
     payload: AniListSyncSnapshot,
     accessToken: string,
   ): Promise<NonNullable<AniListMediaLookupResponse['data']>['Media']> {
-    const response = await this.graphql<AniListMediaLookupResponse>(
-      `query LookupAniListMedia($id: Int, $search: String) {
-        Media(id: $id, search: $search, type: ANIME) {
-          id
-          episodes
-          isFavourite
-          mediaListEntry {
-            id
-            status
-            progress
-          }
-        }
-      }`,
-      {
-        id: payload.anilistMediaId,
-        search: payload.anilistMediaId ? undefined : payload.title,
-      },
-      accessToken,
-    )
+    if (payload.anilistMediaId) {
+      try {
+        const response = await this.graphql<AniListMediaLookupResponse>(
+          `query LookupAniListMediaById($id: Int!) {
+            Media(id: $id, type: ANIME) {
+              id
+              title {
+                english
+                romaji
+                native
+              }
+              synonyms
+              episodes
+              isFavourite
+              mediaListEntry {
+                id
+                status
+                progress
+              }
+            }
+          }`,
+          { id: payload.anilistMediaId },
+          accessToken,
+        )
 
-    return response.data?.Media ?? null
+        const media = response.data?.Media ?? null
+        if (media) {
+          return media
+        }
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.includes('status 404')) {
+          throw error
+        }
+      }
+    }
+
+    const titles = await this.resolveAniListLookupTitles(payload)
+    for (const title of titles) {
+      const response = await this.graphql<AniListMediaLookupResponse>(
+        `query LookupAniListMedia($search: String!) {
+          Media(search: $search, type: ANIME) {
+            id
+            title {
+              english
+              romaji
+              native
+            }
+            synonyms
+            episodes
+            isFavourite
+            mediaListEntry {
+              id
+              status
+              progress
+            }
+          }
+        }`,
+        { search: title },
+        accessToken,
+      )
+
+      const media = response.data?.Media ?? null
+      if (media && scoreAniListLookupMatch(media, titles) >= 68) {
+        return media
+      }
+    }
+
+    return null
+  }
+
+  private async resolveAniListLookupTitles(payload: AniListSyncSnapshot): Promise<string[]> {
+    const titles = new Map<string, string>()
+
+    const addTitle = (value: string | null | undefined) => {
+      const trimmed = value?.trim()
+      if (!trimmed) {
+        return
+      }
+
+      const normalized = normalizeTitle(trimmed)
+      if (!normalized || titles.has(normalized)) {
+        return
+      }
+
+      titles.set(normalized, trimmed)
+    }
+
+    addTitle(payload.title)
+
+    try {
+      const show = await this.provider.getShow(payload.showId)
+      addTitle(show.title)
+      addTitle(show.originalTitle)
+    } catch {
+      // Keep syncing with the stored library title when provider metadata is unavailable.
+    }
+
+    return Array.from(titles.values())
   }
 
   private async fetchViewer(accessToken: string): Promise<AniListViewer> {
@@ -845,7 +916,7 @@ export class AniListService {
   }
 
   private async waitForGraphqlSlot(): Promise<void> {
-    const waitMs = this.lastGraphqlRequestAt + ANILIST_GRAPHQL_MIN_INTERVAL_MS - Date.now()
+    const waitMs = this.lastGraphqlRequestAt + this.env.aniListGraphqlMinIntervalMs - Date.now()
     if (waitMs > 0) {
       await sleep(waitMs)
     }
@@ -985,6 +1056,49 @@ function collectAniListTitles(media: AniListLibraryMedia): string[] {
 
 function getPrimaryTitle(media: AniListLibraryMedia): string {
   return media.title?.english?.trim() || media.title?.romaji?.trim() || media.title?.native?.trim() || `AniList ${media.id}`
+}
+
+function scoreAniListLookupMatch(
+  media: Exclude<NonNullable<AniListMediaLookupResponse['data']>['Media'], null | undefined>,
+  titles: string[],
+): number {
+  const candidateTitles = [
+    media.title?.english,
+    media.title?.romaji,
+    media.title?.native,
+    ...(media.synonyms ?? []),
+  ]
+    .map((value) => normalizeTitle(value ?? ''))
+    .filter(Boolean)
+
+  let bestScore = 0
+  for (const title of titles) {
+    const normalizedTitle = normalizeTitle(title)
+    if (!normalizedTitle) {
+      continue
+    }
+
+    for (const candidateTitle of candidateTitles) {
+      if (candidateTitle === normalizedTitle) {
+        bestScore = Math.max(bestScore, 100)
+        continue
+      }
+
+      if (candidateTitle.startsWith(normalizedTitle) || normalizedTitle.startsWith(candidateTitle)) {
+        bestScore = Math.max(bestScore, 78)
+        continue
+      }
+
+      const overlap = tokenOverlap(normalizedTitle, candidateTitle)
+      if (overlap >= 0.8) {
+        bestScore = Math.max(bestScore, 68)
+      } else if (overlap >= 0.6) {
+        bestScore = Math.max(bestScore, 54)
+      }
+    }
+  }
+
+  return bestScore
 }
 
 function pickProviderMatch(results: ShowSummary[], titles: string[], year: number | null): ShowSummary | null {

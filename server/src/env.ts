@@ -14,6 +14,7 @@ export interface AppEnv {
   aniListClientSecret: string | null
   aniListRedirectUri: string | null
   cacheTtlMs: number
+  aniListGraphqlMinIntervalMs: number
 }
 
 export function loadEnv(): AppEnv {
@@ -38,5 +39,6 @@ export function loadEnv(): AppEnv {
       process.env.ANILIST_REDIRECT_URI?.trim() ||
       `http://localhost:${port}/api/integrations/anilist/callback`,
     cacheTtlMs: Number(process.env.ANIFLOW_CACHE_TTL_MS ?? 1000 * 60 * 60 * 6),
+    aniListGraphqlMinIntervalMs: Number(process.env.ANILIST_GRAPHQL_MIN_INTERVAL_MS ?? 2200),
   }
 }

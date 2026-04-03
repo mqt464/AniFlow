@@ -252,6 +252,7 @@ function createEnv(): AppEnv {
     aniListClientSecret: null,
     aniListRedirectUri: null,
     cacheTtlMs: 1000,
+    aniListGraphqlMinIntervalMs: 0,
   }
 }
 

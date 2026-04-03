@@ -124,8 +124,8 @@ export function PlayerPage() {
   const episodes = showPage?.episodes ?? []
   const currentEpisodeDetails = episodes.find((episode) => episode.number === episodeNumber) ?? null
   const explicitResumeAt = parseSeekValue(searchParams.get('t'))
-  const localResumeSnapshot = readPlayerProgressSnapshot(showId, episodeNumber)
-  const resumeAt = selectResumeTime(explicitResumeAt, localResumeSnapshot, currentEpisodeDetails?.progress ?? null)
+  const initialLocalResumeSnapshot = useMemo(() => readPlayerProgressSnapshot(showId, episodeNumber), [episodeNumber, showId])
+  const resumeAt = selectResumeTime(explicitResumeAt, initialLocalResumeSnapshot, currentEpisodeDetails?.progress ?? null)
   const activeQuality = stream?.qualities.find((quality) => quality.id === selectedQualityId) ?? stream?.qualities[0] ?? null
   const progressPercent = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0
   const bufferedPercent = duration > 0 ? Math.min(100, (bufferedEnd / duration) * 100) : 0
