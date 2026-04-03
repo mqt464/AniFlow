@@ -1854,6 +1854,63 @@ describe('PlayerPage', () => {
     expect(video!.currentTime).toBe(420)
   })
 
+  it('does not reapply the initial resume time when canplay fires after playback has advanced', async () => {
+    window.localStorage.setItem(
+      'aniflow-player-progress:demo-show:1',
+      JSON.stringify({
+        showId: 'demo-show',
+        episodeNumber: '1',
+        currentTime: 420,
+        duration: 1440,
+        completed: false,
+        updatedAt: Date.now(),
+      }),
+    )
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(createPlayerFetchMock())
+
+    const { container } = render(
+      <SessionContext.Provider value={sessionValue}>
+        <MemoryRouter initialEntries={['/player/demo-show/1']}>
+          <Routes>
+            <Route path="/player/:showId/:episodeNumber" element={<PlayerPage />} />
+          </Routes>
+        </MemoryRouter>
+      </SessionContext.Provider>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Episode 1 • Arrival')).toBeInTheDocument()
+    })
+
+    const video = container.querySelector('video')
+    expect(video).not.toBeNull()
+
+    Object.defineProperty(video!, 'duration', {
+      configurable: true,
+      value: 1440,
+    })
+    Object.defineProperty(video!, 'currentTime', {
+      configurable: true,
+      writable: true,
+      value: 0,
+    })
+
+    await act(async () => {
+      fireEvent(video!, new Event('loadedmetadata'))
+    })
+
+    expect(video!.currentTime).toBe(420)
+
+    await act(async () => {
+      video!.currentTime = 422
+      fireEvent(video!, new Event('timeupdate'))
+      fireEvent(video!, new Event('canplay'))
+    })
+
+    expect(video!.currentTime).toBe(422)
+  })
+
   it('persists progress when the tab is hidden and resumes from that snapshot after a refresh', async () => {
     const progressRequests: Array<{ body: Record<string, unknown>; init: RequestInit | undefined }> = []
     const originalVisibilityState = document.visibilityState

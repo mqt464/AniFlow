@@ -378,18 +378,20 @@ export function PlayerPage() {
     }
 
     const sourceUrl = activeQuality?.proxyUrl ?? stream.streamUrl
-    const restoreTime = pendingSeekTimeRef.current ?? resumeAt
+    const initialRestoreTime = pendingSeekTimeRef.current ?? resumeAt
     const shouldResumePlayback = resumePlaybackRef.current
+    let restoreApplied = false
 
     const syncReadyState = () => {
       setVideoReady(true)
       setDuration(Number.isFinite(video.duration) ? video.duration : 0)
-      if (restoreTime !== null) {
-        const maxSeekTime = Number.isFinite(video.duration) ? Math.max(0, video.duration - 0.25) : restoreTime
-        const nextTime = Math.min(Math.max(restoreTime, 0), maxSeekTime)
+      if (!restoreApplied && initialRestoreTime !== null) {
+        const maxSeekTime = Number.isFinite(video.duration) ? Math.max(0, video.duration - 0.25) : initialRestoreTime
+        const nextTime = Math.min(Math.max(initialRestoreTime, 0), maxSeekTime)
         video.currentTime = nextTime
         setCurrentTime(nextTime)
         pendingSeekTimeRef.current = null
+        restoreApplied = true
       }
 
       if (shouldResumePlayback) {

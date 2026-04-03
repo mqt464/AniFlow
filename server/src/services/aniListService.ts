@@ -138,8 +138,8 @@ export class AniListService {
 
   getPublicConnection(): AniListConnection {
     const connection = this.database.getAniListConnection()
-    return (
-      connection ?? {
+    if (!connection) {
+      return {
         connected: false,
         username: null,
         avatarUrl: null,
@@ -150,7 +150,19 @@ export class AniListService {
         lastPullAt: null,
         lastSyncStatus: null,
       }
-    )
+    }
+
+    return {
+      connected: true,
+      username: connection.username,
+      avatarUrl: connection.avatarUrl,
+      bannerUrl: connection.bannerUrl,
+      profileUrl: connection.profileUrl,
+      about: connection.about,
+      connectedAt: connection.connectedAt,
+      lastPullAt: connection.lastPullAt,
+      lastSyncStatus: connection.lastSyncStatus,
+    }
   }
 
   async getHomeDiscover(): Promise<HomeDiscoverPayload> {
@@ -191,7 +203,7 @@ export class AniListService {
     return discover
   }
 
-  async connect(input: { accessToken?: string; code?: string }): Promise<AniListConnection> {
+  async connect(input: { accessToken?: string; code?: string; validateOnly?: boolean }): Promise<AniListConnection> {
     let accessToken = input.accessToken?.trim() || null
     let refreshToken: string | null = null
 
@@ -236,8 +248,12 @@ export class AniListService {
       accessToken,
       refreshToken,
       lastPullAt: null,
-      lastSyncStatus: 'Connected',
+      lastSyncStatus: input.validateOnly ? 'Connected. Run Sync now to import AniList state.' : 'Connected',
     })
+
+    if (input.validateOnly) {
+      return this.getPublicConnection()
+    }
 
     return this.syncNow()
   }

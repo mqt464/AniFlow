@@ -48,6 +48,7 @@ const playbackSchema = z.object({
 const aniListSchema = z.object({
   accessToken: z.string().optional(),
   code: z.string().optional(),
+  validateOnly: z.boolean().optional(),
 })
 
 const librarySchema = z.object({

@@ -682,6 +682,89 @@ describe('app api', () => {
     await app.close()
   })
 
+  it('skips AniList metadata lookups when the provider payload is already complete enough', async () => {
+    const fetchMock = vi.mocked(globalThis.fetch)
+    const originalFetch = fetchMock.getMockImplementation()
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = getRequestUrl(input as string | URL | Request)
+      if (url === 'https://graphql.anilist.co') {
+        throw new Error('AniList should not be queried for demo-show')
+      }
+
+      if (!originalFetch) {
+        throw new Error(`Unexpected fetch in test: ${url}`)
+      }
+
+      return originalFetch(input, init)
+    })
+
+    const app = buildApp(createEnv())
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/shows/demo-show',
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toMatchObject({
+      id: 'demo-show',
+      title: 'Demo Show',
+      originalTitle: 'Demo Show Native',
+      posterUrl: 'https://example.com/poster.jpg',
+      description: 'Demo description',
+      genres: ['Action'],
+      status: 'FINISHED',
+      score: 81,
+      season: 'SPRING',
+      year: 2024,
+    })
+
+    await app.close()
+  })
+
+  it('returns provider data when AniList metadata is rate limited', async () => {
+    const fetchMock = vi.mocked(globalThis.fetch)
+    const originalFetch = fetchMock.getMockImplementation()
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = getRequestUrl(input as string | URL | Request)
+      if (url === 'https://graphql.anilist.co') {
+        return new Response('rate limited', { status: 429 })
+      }
+
+      if (!originalFetch) {
+        throw new Error(`Unexpected fetch in test: ${url}`)
+      }
+
+      return originalFetch(input, init)
+    })
+
+    const app = buildApp(createEnv())
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/shows/fallback-show',
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toMatchObject({
+      id: 'fallback-show',
+      title: 'Fallback Show',
+      originalTitle: 'Fallback Show',
+      posterUrl: null,
+      bannerUrl: null,
+      description: null,
+      genres: [],
+      status: null,
+      score: null,
+      season: null,
+      year: 2025,
+      availableEpisodes: {
+        sub: 12,
+        dub: 0,
+      },
+    })
+
+    await app.close()
+  })
+
   it('serves the built frontend and preserves api 404s', async () => {
     const env = createEnv()
     fs.mkdirSync(path.join(env.frontendDistDir, 'assets'), { recursive: true })

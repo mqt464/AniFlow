@@ -61,6 +61,7 @@ interface AniListMetadataResponse {
       media?: AniListMetadataCandidate[]
     } | null
   }
+  errors?: Array<{ message?: string }>
 }
 
 interface AniListMetadataCandidate {
@@ -120,6 +121,8 @@ interface ProviderLinkEntry {
   Referer?: string
   referer?: string
 }
+
+const ANILIST_GRAPHQL_ENDPOINTS = ['https://graphql.anilist.co', 'https://graphql.anilist.co/'] as const
 
 export class AllAnimeAdapter {
   constructor(
@@ -213,10 +216,12 @@ export class AllAnimeAdapter {
       throw new Error('Show not found')
     }
 
-    const aniListMetadata = await this.lookupAniListMetadata(
-      [show.englishName, show.name, show.nativeName],
-      show.season?.year ?? null,
-    )
+    const providerDescription = stripHtml(show.description)
+    const aniListMetadata = needsAniListMetadata(show, providerDescription)
+      ? await this.lookupAniListMetadata([show.englishName, show.name, show.nativeName], show.season?.year ?? null).catch(
+          () => null,
+        )
+      : null
 
     const result: ShowDetail = {
       id: show._id,
@@ -230,7 +235,7 @@ export class AllAnimeAdapter {
         null,
       bannerUrl: show.banner ?? aniListMetadata?.bannerImage ?? null,
       posterUrl: show.thumbnail ?? aniListMetadata?.coverImage?.extraLarge ?? aniListMetadata?.coverImage?.large ?? null,
-      description: stripHtml(show.description) ?? stripHtml(aniListMetadata?.description),
+      description: providerDescription ?? stripHtml(aniListMetadata?.description),
       genres: show.genres?.length ? show.genres : aniListMetadata?.genres ?? [],
       status: normalizeStatus(show.status) ?? normalizeStatus(aniListMetadata?.status),
       year: show.season?.year ?? aniListMetadata?.seasonYear ?? null,
@@ -413,48 +418,65 @@ export class AllAnimeAdapter {
   }
 
   private async queryAniList(search: string, seasonYear: number | null): Promise<AniListMetadataResponse> {
-    const response = await fetch('https://graphql.anilist.co', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        query: `query SearchAniListMetadata($search: String!, $seasonYear: Int) {
-          Page(page: 1, perPage: 5) {
-            media(search: $search, type: ANIME, seasonYear: $seasonYear, sort: SEARCH_MATCH) {
-              id
-              title {
-                english
-                romaji
-                native
-              }
-              synonyms
-              coverImage {
-                extraLarge
-                large
-              }
-              bannerImage
-              description
-              genres
-              status
-              averageScore
-              season
-              seasonYear
-            }
-          }
-        }`,
-        variables: {
-          search,
-          seasonYear,
-        },
-      }),
-    })
+    let lastError: Error | null = null
 
-    if (!response.ok) {
-      throw new Error(`AniList metadata lookup failed with status ${response.status}`)
+    for (const endpoint of ANILIST_GRAPHQL_ENDPOINTS) {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          query: `query SearchAniListMetadata($search: String!, $seasonYear: Int) {
+            Page(page: 1, perPage: 5) {
+              media(search: $search, type: ANIME, seasonYear: $seasonYear, sort: SEARCH_MATCH) {
+                id
+                title {
+                  english
+                  romaji
+                  native
+                }
+                synonyms
+                coverImage {
+                  extraLarge
+                  large
+                }
+                bannerImage
+                description
+                genres
+                status
+                averageScore
+                season
+                seasonYear
+              }
+            }
+          }`,
+          variables: {
+            search,
+            seasonYear,
+          },
+        }),
+      })
+
+      if (!response.ok) {
+        lastError = new Error(`AniList metadata lookup failed with status ${response.status}`)
+        if (response.status === 404 && endpoint !== ANILIST_GRAPHQL_ENDPOINTS[ANILIST_GRAPHQL_ENDPOINTS.length - 1]) {
+          continue
+        }
+
+        throw lastError
+      }
+
+      const body = (await response.json()) as AniListMetadataResponse
+      if (body.errors?.length) {
+        throw new Error(body.errors.map((error) => error.message).filter(Boolean).join('; ') || 'AniList metadata lookup failed')
+      }
+
+      return body
     }
 
-    return (await response.json()) as AniListMetadataResponse
+    throw lastError ?? new Error('AniList metadata lookup failed')
   }
 }
 
@@ -690,6 +712,22 @@ function normalizeStatus(status: string | null | undefined): string | null {
   }
 
   return normalized
+}
+
+function needsAniListMetadata(
+  show: NonNullable<NonNullable<ShowResponse['data']>['show']>,
+  description: string | null,
+): boolean {
+  return (
+    !show.nativeName?.trim() ||
+    !show.thumbnail?.trim() ||
+    !description ||
+    !show.genres?.length ||
+    normalizeStatus(show.status) === null ||
+    show.score == null ||
+    show.season?.year == null ||
+    !show.season?.quarter?.trim()
+  )
 }
 
 function scoreAniListCandidate(candidate: AniListMetadataCandidate, titles: string[], year: number | null): number {

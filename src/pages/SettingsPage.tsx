@@ -117,7 +117,7 @@ export function SettingsPage() {
       setTokenMessage('Checking AniList token...')
 
       void api
-        .connectAniList({ accessToken: nextToken })
+        .connectAniList({ accessToken: nextToken, validateOnly: true })
         .then((result) => {
           if (!active) {
             return

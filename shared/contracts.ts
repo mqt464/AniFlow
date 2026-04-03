@@ -206,4 +206,5 @@ export interface ProgressInput {
 export interface AniListConnectInput {
   accessToken?: string
   code?: string
+  validateOnly?: boolean
 }

@@ -151,6 +151,63 @@ describe('AniListService', () => {
     }
   })
 
+  it('validates and stores a token without running the initial sync when requested', async () => {
+    const env = createEnv()
+    const database = new AniFlowDatabase(env.dbPath)
+    const service = new AniListService(env, database, {} as never)
+
+    try {
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input)
+        const bodyText = typeof init?.body === 'string' ? init.body : input instanceof Request ? await input.text() : '{}'
+        const body = JSON.parse(bodyText) as { query?: string }
+
+        if (!url.startsWith('https://graphql.anilist.co')) {
+          throw new Error(`Unexpected fetch: ${url}`)
+        }
+
+        expect(body.query).toContain('ViewerProfile')
+        return new Response(
+          JSON.stringify({
+            data: {
+              Viewer: {
+                id: 7,
+                name: 'mat',
+                siteUrl: 'https://anilist.co/user/mat',
+                about: 'bio',
+                bannerImage: null,
+                avatar: {
+                  large: 'https://anilist.example/avatar.jpg',
+                },
+              },
+            },
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          },
+        )
+      })
+
+      const response = await service.connect({ accessToken: 'token', validateOnly: true })
+
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      expect(response).toEqual({
+        connected: true,
+        username: 'mat',
+        avatarUrl: 'https://anilist.example/avatar.jpg',
+        bannerUrl: null,
+        profileUrl: 'https://anilist.co/user/mat',
+        about: 'bio',
+        connectedAt: expect.any(String),
+        lastPullAt: null,
+        lastSyncStatus: 'Connected. Run Sync now to import AniList state.',
+      })
+    } finally {
+      database.close()
+    }
+  })
+
   it('backposts local watched, completed, and watch-later state during manual sync', async () => {
     const env = createEnv()
     const database = new AniFlowDatabase(env.dbPath)
