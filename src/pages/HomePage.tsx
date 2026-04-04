@@ -1,5 +1,5 @@
-import { ChevronLeft, ChevronRight, Film, Play, Star } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { ChevronDown, ChevronLeft, ChevronRight, Play, Star } from 'lucide-react'
+import { Fragment, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { Link } from 'react-router-dom'
 
 import type {
@@ -12,6 +12,7 @@ import type {
   WatchProgress,
 } from '../../shared/contracts'
 import { PosterImage } from '../components/PosterImage'
+import { RatingStars } from '../components/RatingStars'
 import { ApiError, createApi } from '../lib/api'
 import { pickAvailableTranslation, withMode } from '../lib/appPreferences'
 import { useSession } from '../session'
@@ -28,14 +29,17 @@ const RAIL_SKELETON_COUNT = 6
 
 interface RailItem {
   id: string
+  kind: 'continue' | 'watchLater' | 'completed' | 'discover'
   showId: string | null
   href: string | null
   title: string
   posterUrl: string | null
   rating: number | null
   libraryEntry: LibraryEntry | null
+  episodeLabel: string
+  hasNewEpisode?: boolean
   progressPercent?: number
-  availabilityLabel?: string | null
+  progressLabel?: string | null
 }
 
 interface ContextMenuState {
@@ -61,6 +65,7 @@ export function HomePage() {
   const [loading, setLoading] = useState(true)
   const [homeRevision, setHomeRevision] = useState(0)
   const [activeHeroIndex, setActiveHeroIndex] = useState(0)
+  const [expandedFeaturedSynopsisIds, setExpandedFeaturedSynopsisIds] = useState<Record<string, boolean>>({})
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
   const contextMenuRef = useRef<HTMLDivElement | null>(null)
 
@@ -272,49 +277,65 @@ export function HomePage() {
   const currentWatchingItems = continueWatching.map((entry) => {
     const metadata = metadataByShowId[entry.showId]
     const resumeSnapshot = getResumeSnapshot(entry, recentProgress)
+    const latestAvailableEpisode = getLatestAvailableEpisode(metadata?.availableEpisodes)
+    const hasNewEpisode = hasNewEpisodeAvailable(entry.latestEpisodeNumber, latestAvailableEpisode)
 
     return {
       id: entry.showId,
+      kind: 'continue',
       showId: entry.showId,
       href: withMode(`/player/${entry.showId}/${resumeSnapshot.episodeNumber}`, preferredTranslationType),
       title: metadata?.title ?? entry.title,
       posterUrl: entry.posterUrl ?? metadata?.posterUrl ?? metadata?.bannerUrl ?? null,
       rating: metadata?.score ?? null,
       libraryEntry: entry,
+      episodeLabel: `Episode ${resumeSnapshot.episodeNumber} in progress`,
+      hasNewEpisode,
       progressPercent: resumeSnapshot.progressPercent,
+      progressLabel: formatTimeRange(resumeSnapshot.currentTime, resumeSnapshot.duration),
     } satisfies RailItem
   })
 
   const watchLaterItems = watchLater.map((entry) => {
     const metadata = metadataByShowId[entry.showId]
+    const latestAvailableEpisode = getLatestAvailableEpisode(metadata?.availableEpisodes)
+    const hasNewEpisode = hasNewEpisodeAvailable(entry.latestEpisodeNumber, latestAvailableEpisode)
 
     return {
       id: entry.showId,
+      kind: 'watchLater',
       showId: entry.showId,
       href: withMode(`/shows/${entry.showId}`, preferredTranslationType),
       title: metadata?.title ?? entry.title,
       posterUrl: entry.posterUrl ?? metadata?.posterUrl ?? metadata?.bannerUrl ?? null,
       rating: metadata?.score ?? null,
       libraryEntry: entry,
+      episodeLabel: buildQueuedEpisodeLabel(latestAvailableEpisode, metadata?.status),
+      hasNewEpisode,
     } satisfies RailItem
   })
 
   const completedItems = completed.map((entry) => {
     const metadata = metadataByShowId[entry.showId]
+    const latestAvailableEpisode = getLatestAvailableEpisode(metadata?.availableEpisodes)
+    const hasNewEpisode = hasNewEpisodeAvailable(entry.latestEpisodeNumber, latestAvailableEpisode)
     return {
       id: entry.showId,
+      kind: 'completed',
       showId: entry.showId,
       href: withMode(`/shows/${entry.showId}`, preferredTranslationType),
       title: metadata?.title ?? entry.title,
       posterUrl: entry.posterUrl ?? metadata?.posterUrl ?? metadata?.bannerUrl ?? null,
       rating: metadata?.score ?? null,
       libraryEntry: entry,
+      episodeLabel: entry.latestEpisodeNumber ? `Completed through ep ${entry.latestEpisodeNumber}` : 'Completed',
+      hasNewEpisode,
     } satisfies RailItem
   })
 
-  const trendingItems = buildDiscoverRail(discover.trending, libraryByShowId, recentByShowId, preferredTranslationType)
-  const seasonalItems = buildDiscoverRail(discover.popularThisSeason, libraryByShowId, recentByShowId, preferredTranslationType)
-  const upcomingItems = buildDiscoverRail(discover.upcomingNextSeason, libraryByShowId, recentByShowId, preferredTranslationType)
+  const trendingItems = buildDiscoverRail(discover.trending, preferredTranslationType)
+  const seasonalItems = buildDiscoverRail(discover.popularThisSeason, preferredTranslationType)
+  const upcomingItems = buildDiscoverRail(discover.upcomingNextSeason, preferredTranslationType)
   const contextMenuActions = contextMenu ? buildContextMenuActions(contextMenu.item) : []
   const isInitialLoading = loading && !data
 
@@ -355,7 +376,15 @@ export function HomePage() {
           <>
             <div className="featured-track" style={{ transform: `translateX(-${safeHeroIndex * 100}%)` }}>
               {featuredShows.map((show, index) => {
-                const showHref = resolveDiscoverHref(show, libraryByShowId, recentByShowId, preferredTranslationType)
+                const showHref = show.providerShowId
+                  ? withMode(`/shows/${show.providerShowId}`, pickAvailableTranslation(show.availableEpisodes, preferredTranslationType))
+                  : null
+                const synopsis = show.description ?? 'Open the title page to inspect catalog availability and metadata.'
+                const shouldClampSynopsis = synopsis.length > 220
+                const synopsisExpanded = Boolean(expandedFeaturedSynopsisIds[show.id])
+                const titleLine = buildFeaturedTitleLine(show)
+                const scoreLabel = formatFeaturedScore(show.score)
+                const heroTaxonomyItems = buildFeaturedHeroTaxonomyItems(show)
 
                 return (
                   <article className="featured-slide" key={show.id}>
@@ -367,21 +396,82 @@ export function HomePage() {
 
                     <div className="featured-overlay">
                       <div className="featured-content">
-                        <h2>{show.title}</h2>
-                        <div className="featured-meta-line">
-                          {buildFeaturedMeta(show).map((item) => (
-                            <span key={item}>{item}</span>
-                          ))}
+                        <div className="show-canvas-title-block">
+                          <div className="show-canvas-title-tags" aria-label="Show highlights">
+                            <div className="show-canvas-title-tag">
+                              <span>Trending pick</span>
+                            </div>
+                            {show.score ? (
+                              <div className="show-canvas-title-tag">
+                                <Star className="show-canvas-title-tag-icon" size={13} strokeWidth={2} />
+                                <span>{Math.round(show.score)}%</span>
+                              </div>
+                            ) : null}
+                            {show.status ? <div className="show-canvas-title-tag show-canvas-title-tag-status">{formatFeaturedStatus(show.status)}</div> : null}
+                          </div>
+
+                          {titleLine ? (
+                            <p className="show-canvas-original">
+                              <span>{titleLine.native}</span>
+                              <span aria-hidden="true" className="show-canvas-original-separator">
+                                ·
+                              </span>
+                              <span>{titleLine.romaji}</span>
+                            </p>
+                          ) : null}
+
+                          <h1>{show.title}</h1>
+
+                          {scoreLabel ? (
+                            <div className="show-canvas-rating" aria-label="Score and audience">
+                              <div className="show-canvas-rating-chip show-canvas-rating-chip-score">
+                                <RatingStars valuePercent={show.score ?? 0} />
+                                <span className="show-canvas-rating-value">{scoreLabel}</span>
+                              </div>
+                            </div>
+                          ) : null}
+
+                          <div className="show-canvas-synopsis">
+                            <p className={`show-canvas-synopsis-copy ${synopsisExpanded ? 'expanded' : ''}`}>{synopsis}</p>
+                            {shouldClampSynopsis ? (
+                              <button
+                                aria-expanded={synopsisExpanded}
+                                className={`show-canvas-synopsis-toggle ${synopsisExpanded ? 'expanded' : ''}`}
+                                type="button"
+                                onClick={() =>
+                                  setExpandedFeaturedSynopsisIds((current) => ({
+                                    ...current,
+                                    [show.id]: !current[show.id],
+                                  }))
+                                }
+                              >
+                                <span>{synopsisExpanded ? 'Show less' : 'Show more'}</span>
+                                <ChevronDown size={14} strokeWidth={2} />
+                              </button>
+                            ) : null}
+
+                            {heroTaxonomyItems.length ? (
+                              <div className="show-canvas-hero-taxonomy" aria-label="Genres and tags">
+                                {heroTaxonomyItems.map((item, itemIndex) => (
+                                  <Fragment key={item.key}>
+                                    {itemIndex > 0 ? (
+                                      <span aria-hidden="true" className="show-canvas-hero-taxonomy-separator">
+                                        ·
+                                      </span>
+                                    ) : null}
+                                    <span className={`show-canvas-hero-taxonomy-item ${item.kind === 'tag' ? 'is-tag' : ''}`}>{item.label}</span>
+                                  </Fragment>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
                         </div>
-                        <p>{show.description ?? 'Open the title page to inspect catalog availability and metadata.'}</p>
 
                         <div className="featured-actions">
                           {showHref ? (
-                            <Link className="primary-button" to={showHref}>
+                            <Link className="featured-primary-action" to={showHref}>
                               <Play aria-hidden="true" size={16} strokeWidth={1.9} />
-                              {show.providerShowId && (libraryByShowId.has(show.providerShowId) || recentByShowId.has(show.providerShowId))
-                                ? 'Resume'
-                                : 'Open show'}
+                              <span>Open show</span>
                             </Link>
                           ) : (
                             <span className="featured-inline-status">{describeDiscoverAvailability(show)}</span>
@@ -389,13 +479,13 @@ export function HomePage() {
 
                           {show.trailer?.videoUrl ? (
                             <a
-                              className="featured-inline-link"
+                              className="featured-trailer-action"
                               href={show.trailer.videoUrl}
                               rel="noreferrer"
                               target="_blank"
                             >
-                              <Film aria-hidden="true" size={16} strokeWidth={1.9} />
-                              Trailer
+                              <Play aria-hidden="true" size={15} strokeWidth={1.9} />
+                              <span>Watch trailer</span>
                             </a>
                           ) : null}
                         </div>
@@ -581,10 +671,16 @@ function PosterRail({
           <div className="poster-rail poster-rail-skeleton" role="presentation">
             {Array.from({ length: RAIL_SKELETON_COUNT }, (_, index) => (
               <div className="poster-card poster-card-large poster-card-skeleton" key={index}>
-                <div className="loading-skeleton poster-card-image" />
-                <div className="poster-card-overlay poster-card-overlay-visible">
-                  <div className="loading-skeleton loading-skeleton-line poster-card-skeleton-line" />
-                  <div className="loading-skeleton loading-skeleton-chip poster-card-skeleton-chip" />
+                <div className="loading-skeleton poster-card-image poster-card-skeleton-media" />
+                <div className="poster-card-body">
+                  <div className="poster-card-copy">
+                    <div className="loading-skeleton loading-skeleton-line poster-card-skeleton-line poster-card-skeleton-line-title" />
+                    <div className="poster-card-meta-row">
+                      <div className="loading-skeleton loading-skeleton-line poster-card-skeleton-line poster-card-skeleton-line-meta" />
+                      <div className="loading-skeleton loading-skeleton-chip poster-card-skeleton-chip" />
+                    </div>
+                    <div className="loading-skeleton loading-skeleton-line poster-card-skeleton-line poster-card-skeleton-line-progress" />
+                  </div>
                 </div>
               </div>
             ))}
@@ -592,10 +688,11 @@ function PosterRail({
         </div>
       ) : items.length ? (
         <div className="poster-rail-shell">
-          {hasOverflow && canScrollLeft ? (
+          {hasOverflow ? (
             <button
               aria-label={`Scroll ${title} left`}
               className="rail-scroll-button rail-scroll-button-left"
+              disabled={!canScrollLeft}
               type="button"
               onClick={() => scrollRail('left')}
             >
@@ -628,10 +725,11 @@ function PosterRail({
             )}
           </div>
 
-          {hasOverflow && canScrollRight ? (
+          {hasOverflow ? (
             <button
               aria-label={`Scroll ${title} right`}
               className="rail-scroll-button rail-scroll-button-right"
+              disabled={!canScrollRight}
               type="button"
               onClick={() => scrollRail('right')}
             >
@@ -672,39 +770,47 @@ function FeaturedCarouselSkeleton() {
 function RailCardContent({ item }: { item: RailItem }) {
   return (
     <>
-      <PosterImage alt={`${item.title} poster`} className="poster-card-image" src={item.posterUrl} />
-      <div className="poster-card-overlay">
-        <strong>{item.title}</strong>
-        <span className="poster-card-rating">
-          <Star aria-hidden="true" size={14} strokeWidth={1.9} />
-          {item.rating ? Math.round(item.rating) : 'NR'}
-        </span>
-        {item.availabilityLabel ? <span className="poster-card-status">{item.availabilityLabel}</span> : null}
+      <div className="poster-card-media">
+        <PosterImage alt={`${item.title} poster`} className="poster-card-image" src={item.posterUrl} />
+
+        {typeof item.progressPercent === 'number' ? (
+          <div className="poster-card-canvas-progress">
+            {item.progressLabel ? <span className="poster-card-canvas-progress-label">{item.progressLabel}</span> : null}
+            <div aria-hidden="true" className="poster-progress">
+              <div className="poster-progress-fill" style={{ width: `${item.progressPercent}%` }} />
+            </div>
+          </div>
+        ) : null}
       </div>
-      {typeof item.progressPercent === 'number' ? (
-        <div aria-hidden="true" className="poster-progress">
-          <div className="poster-progress-fill" style={{ width: `${item.progressPercent}%` }} />
+
+      <div className="poster-card-body">
+        <div className="poster-card-copy">
+          <div className="poster-card-meta-row">
+            <span className="poster-card-episode-label">{item.episodeLabel}</span>
+          </div>
+
+          <strong>{item.title}</strong>
         </div>
-      ) : null}
+      </div>
     </>
   )
 }
 
 function buildDiscoverRail(
   shows: DiscoverShow[],
-  libraryByShowId: Map<string, LibraryEntry>,
-  recentByShowId: Map<string, WatchProgress>,
   preferredTranslationType: TranslationType,
 ): RailItem[] {
   return shows.map((show) => ({
     id: show.id,
+    kind: 'discover',
     showId: show.providerShowId,
-    href: resolveDiscoverHref(show, libraryByShowId, recentByShowId, preferredTranslationType),
+    href: show.providerShowId ? withMode(`/shows/${show.providerShowId}`, preferredTranslationType) : null,
     title: show.title,
     posterUrl: show.posterUrl ?? show.bannerUrl,
     rating: show.score ?? null,
-    libraryEntry: show.providerShowId ? libraryByShowId.get(show.providerShowId) ?? null : null,
-    availabilityLabel: resolveAvailabilityLabel(show),
+    libraryEntry: null,
+    episodeLabel: buildQueuedEpisodeLabel(getLatestAvailableEpisode(show.availableEpisodes), show.status),
+    hasNewEpisode: false,
   }))
 }
 
@@ -745,53 +851,76 @@ function describeDiscoverAvailability(show: DiscoverShow): string {
   return 'No stream match yet'
 }
 
-function buildFeaturedMeta(show: DiscoverShow): string[] {
-  const items: string[] = []
+function buildAvailabilitySummary(availableEpisodes: Record<TranslationType, number>) {
+  const parts: string[] = []
 
-  if (show.year) {
-    items.push(String(show.year))
+  if (availableEpisodes.sub > 0) {
+    parts.push(`${availableEpisodes.sub} sub`)
   }
 
-  if (show.season) {
-    items.push(toTitleCase(show.season))
+  if (availableEpisodes.dub > 0) {
+    parts.push(`${availableEpisodes.dub} dub`)
   }
 
-  if (show.score) {
-    items.push(`${Math.round(show.score)}%`)
+  return parts.length ? `${parts.join(' / ')} episodes` : 'Stream match pending'
+}
+
+function buildFeaturedTitleLine(show: DiscoverShow) {
+  const native = show.originalTitle?.trim() ?? null
+  const romaji = show.romajiTitle?.trim() ?? null
+  const normalizedTitle = normalizeTitle(show.title)
+  const normalizedNative = native ? normalizeTitle(native) : null
+  const normalizedRomaji = romaji ? normalizeTitle(romaji) : null
+
+  if (
+    native &&
+    romaji &&
+    normalizedNative !== normalizedTitle &&
+    normalizedRomaji !== normalizedTitle &&
+    normalizedNative !== normalizedRomaji
+  ) {
+    return { native, romaji }
   }
 
-  items.push(describeDiscoverAvailability(show))
+  return null
+}
+
+function formatFeaturedScore(score: number | null | undefined) {
+  if (typeof score !== 'number' || Number.isNaN(score)) {
+    return null
+  }
+
+  return `${Math.round(score)}%`
+}
+
+function buildFeaturedHeroTaxonomyItems(show: DiscoverShow) {
+  const items: Array<{ key: string; label: string; kind: 'meta' | 'tag' }> = []
+
+  items.push({
+    key: 'availability',
+    label: buildAvailabilitySummary(show.availableEpisodes),
+    kind: 'meta',
+  })
 
   if (show.genres.length) {
-    items.push(show.genres.slice(0, 2).join(', '))
+    items.push(
+      ...show.genres.slice(0, 3).map((genre) => ({
+        key: `genre-${genre}`,
+        label: genre,
+        kind: 'tag' as const,
+      })),
+    )
   }
 
   return items
 }
 
-function resolveAvailabilityLabel(show: DiscoverShow): string | null {
-  if (show.availableEpisodes.sub > 0 || show.availableEpisodes.dub > 0) {
-    return null
-  }
-
-  if (show.status === 'NOT_YET_RELEASED') {
-    return 'Soon'
-  }
-
-  return show.providerShowId ? 'Info only' : 'No stream yet'
-}
-
-function resolveDiscoverHref(
-  show: DiscoverShow,
-  libraryByShowId: Map<string, LibraryEntry>,
-  recentByShowId: Map<string, WatchProgress>,
-  preferredTranslationType: TranslationType,
-): string | null {
-  if (!show.providerShowId) {
-    return null
-  }
-
-  return resolveShowHref(show.providerShowId, libraryByShowId, recentByShowId, pickAvailableTranslation(show.availableEpisodes, preferredTranslationType))
+function formatFeaturedStatus(status: string) {
+  return status
+    .toLowerCase()
+    .split('_')
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ')
 }
 
 function resolveShowHref(
@@ -831,8 +960,68 @@ function getResumeSnapshot(entry: LibraryEntry, recentProgress: WatchProgress[])
 
   return {
     episodeNumber,
+    currentTime,
+    duration,
     progressPercent: progressEntry?.completed ? 100 : progressPercent,
   }
+}
+
+function buildQueuedEpisodeLabel(latestAvailableEpisode: string | null, status: string | null | undefined) {
+  if (latestAvailableEpisode) {
+    return `Latest episode ${latestAvailableEpisode}`
+  }
+
+  if (status === 'NOT_YET_RELEASED') {
+    return 'Releases soon'
+  }
+
+  return 'Stream status pending'
+}
+
+function getLatestAvailableEpisode(availableEpisodes?: Record<TranslationType, number> | null) {
+  if (!availableEpisodes) {
+    return null
+  }
+
+  const highestEpisode = Math.max(availableEpisodes.sub ?? 0, availableEpisodes.dub ?? 0)
+  return highestEpisode > 0 ? String(highestEpisode) : null
+}
+
+function hasNewEpisodeAvailable(lastKnownEpisode: string | null, latestAvailableEpisode: string | null) {
+  const knownEpisode = parseEpisodeNumber(lastKnownEpisode)
+  const latestEpisode = parseEpisodeNumber(latestAvailableEpisode)
+
+  if (knownEpisode === null || latestEpisode === null) {
+    return false
+  }
+
+  return latestEpisode > knownEpisode
+}
+
+function parseEpisodeNumber(value: string | null | undefined) {
+  if (!value) {
+    return null
+  }
+
+  const parsed = Number.parseFloat(value.replace(/[^0-9.]/g, ''))
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function formatTimeRange(currentTime: number, duration: number) {
+  return `${formatTimestamp(currentTime)} / ${formatTimestamp(duration)}`
+}
+
+function formatTimestamp(totalSeconds: number) {
+  const safeSeconds = Math.max(0, Math.floor(totalSeconds))
+  const hours = Math.floor(safeSeconds / 3600)
+  const minutes = Math.floor((safeSeconds % 3600) / 60)
+  const seconds = safeSeconds % 60
+
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+  }
+
+  return `${minutes}:${String(seconds).padStart(2, '0')}`
 }
 
 function normalizeTitle(title: string) {

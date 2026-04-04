@@ -35,6 +35,7 @@ describe('ShowPage', () => {
     expect(screen.getByText(/tracking active/i)).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: /watched1/i })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /training day/i })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /what came before/i })).toHaveTextContent('Sub')
     expect(screen.getByText('Up next')).toBeInTheDocument()
   })
 
@@ -58,6 +59,24 @@ describe('ShowPage', () => {
     expect(episodeList).not.toBeNull()
     expect(within(episodeList as HTMLElement).getByRole('link', { name: /what came before/i })).toBeInTheDocument()
     expect(within(episodeList as HTMLElement).queryByRole('link', { name: /arrival/i })).not.toBeInTheDocument()
+  })
+
+  it('shows per-episode translation availability and keeps the filter rail on the right', async () => {
+    mockShowPageResponse(buildPayload())
+    const user = userEvent.setup()
+
+    renderPage()
+
+    expect(await screen.findByRole('heading', { name: 'Demo Show' })).toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: 'Episodes' }))
+
+    expect(screen.getByRole('link', { name: /arrival/i })).not.toHaveTextContent('Sub')
+    expect(screen.getByRole('link', { name: /arrival/i })).not.toHaveTextContent('Dub')
+    expect(screen.getByRole('link', { name: /what came before/i })).toHaveTextContent('Sub')
+
+    const layout = document.querySelector('.show-run-layout')
+    expect(layout?.firstElementChild).toHaveClass('show-run-main')
+    expect(layout?.lastElementChild).toHaveClass('show-run-side')
   })
 })
 
@@ -102,7 +121,7 @@ function buildPayload() {
       year: 2024,
       season: 'SPRING',
       score: 90,
-      availableEpisodes: { sub: 3, dub: 3 },
+      availableEpisodes: { sub: 3, dub: 2 },
     },
     aniListDetails: {
       mediaId: 101,

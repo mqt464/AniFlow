@@ -6,7 +6,6 @@ import {
   ExternalLink,
   Heart,
   LoaderCircle,
-  Play,
   Search,
   Star,
 } from 'lucide-react'
@@ -14,7 +13,6 @@ import { Fragment, useDeferredValue, useEffect, useMemo, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 
 import type {
-  CSSProperties,
   LibraryEntry,
   LibraryUpdateInput,
   ShowEpisode,
@@ -23,6 +21,7 @@ import type {
   TranslationType,
 } from '../../shared/contracts'
 import { PosterImage } from '../components/PosterImage'
+import { RatingStars } from '../components/RatingStars'
 import { ApiError, createApi } from '../lib/api'
 import { resolveTranslationType, withMode } from '../lib/appPreferences'
 import { useSession } from '../session'
@@ -194,7 +193,7 @@ export function ShowPage() {
   const visibleTags = details?.tags.filter((tag) => !tag.isSpoiler).slice(0, 5) ?? []
   const scoreLabel = formatScore(details?.averageScore ?? show?.score ?? null)
   const ratingValue = details?.averageScore ?? show?.score ?? null
-  const ratingFill = typeof ratingValue === 'number' && Number.isFinite(ratingValue) ? Math.max(0, Math.min(100, (ratingValue / 10) * 100)) : 0
+  const ratingFill = typeof ratingValue === 'number' && Number.isFinite(ratingValue) ? Math.max(0, Math.min(100, ratingValue)) : 0
   const audienceStats = AUDIENCE_ORDER.map((status) => ({
     status,
     label: audienceStatusLabel(status),
@@ -204,7 +203,6 @@ export function ShowPage() {
   const airingStatusTag = buildAiringStatusTag(details?.status ?? show?.status)
   const heroTaxonomyItems = buildHeroTaxonomyItems(visibleGenres, visibleTags)
   const heroAudienceItems = buildHeroAudienceItems(audienceStats)
-  const ratingFillStyle = { width: `${ratingFill}%` } satisfies CSSProperties
   const detailRows = [
     { label: 'Format', value: formatLabel(details?.format) },
     { label: 'Episodes', value: totalEpisodes ? String(totalEpisodes) : null },
@@ -247,6 +245,7 @@ export function ShowPage() {
         return true
     }
   })
+  const availableEpisodeCounts = show?.availableEpisodes ?? null
   const nextUpEpisode = currentEpisode ?? nextUnseenEpisode
   const episodeSummaryLabel = buildEpisodeSummaryLabel({
     visibleEpisodeCount: filteredEpisodes.length,
@@ -308,18 +307,7 @@ export function ShowPage() {
                   <div className="show-canvas-rating" aria-label="Score and audience">
                     {scoreLabel ? (
                       <div className="show-canvas-rating-chip show-canvas-rating-chip-score">
-                        <span className="show-canvas-rating-stars" aria-hidden="true">
-                          <span className="show-canvas-rating-stars-base">
-                            {Array.from({ length: 5 }).map((_, index) => (
-                              <Star key={`rating-star-base-${index}`} size={13} strokeWidth={1.9} />
-                            ))}
-                          </span>
-                          <span className="show-canvas-rating-stars-fill" style={ratingFillStyle}>
-                            {Array.from({ length: 5 }).map((_, index) => (
-                              <Star key={`rating-star-fill-${index}`} size={13} strokeWidth={1.9} />
-                            ))}
-                          </span>
-                        </span>
+                        <RatingStars valuePercent={ratingFill} />
                         <span className="show-canvas-rating-value">{scoreLabel}</span>
                       </div>
                     ) : null}
@@ -371,14 +359,12 @@ export function ShowPage() {
               <div className="show-canvas-actions">
                 {primaryHref && primaryLabel ? (
                   <Link className="show-canvas-primary" to={primaryHref}>
-                    <Play size={16} strokeWidth={2} />
                     <span>{primaryLabel}</span>
                   </Link>
                 ) : null}
 
                 {details?.trailer?.videoUrl ? (
                   <a className="show-canvas-trailer" href={details.trailer.videoUrl} rel="noreferrer" target="_blank">
-                    <Play size={15} strokeWidth={1.9} />
                     <span>Watch trailer</span>
                   </a>
                 ) : null}
@@ -630,24 +616,6 @@ export function ShowPage() {
             </header>
 
             <div className="show-run-layout">
-              <aside className="show-run-side">
-                <div aria-label="Episode filters" className="show-run-filterrail" role="tablist">
-                  {EPISODE_FILTERS.map((filter) => (
-                    <button
-                      key={filter.value}
-                      aria-selected={episodeFilter === filter.value}
-                      className={episodeFilter === filter.value ? 'active' : undefined}
-                      role="tab"
-                      type="button"
-                      onClick={() => setEpisodeFilter(filter.value)}
-                    >
-                      <span>{filter.label}</span>
-                      <strong>{episodeFilterCounts[filter.value]}</strong>
-                    </button>
-                  ))}
-                </div>
-              </aside>
-
               <div className="show-run-main">
                 <label className="show-run-search" htmlFor="show-episode-search">
                   <Search aria-hidden="true" size={16} strokeWidth={2} />
@@ -667,6 +635,7 @@ export function ShowPage() {
                       const href = episodeHref(showId, episode, translationType)
                       const progressPercent = getEpisodeProgressPercent(episode)
                       const episodeStateLabel = getEpisodeStateLabel(episode)
+                      const availabilityLabel = getEpisodeAvailabilityLabel(episode, availableEpisodeCounts)
                       const metaLine = [
                         `Episode ${episode.number}`,
                         formatEpisodeDuration(episode.durationSeconds),
@@ -689,10 +658,10 @@ export function ShowPage() {
 
                             <div className="show-run-titleline">
                               <h3>{episode.title}</h3>
-                              <Play aria-hidden="true" size={15} strokeWidth={1.9} />
                             </div>
 
                             <div className="show-run-tags">
+                              {availabilityLabel ? <span className="show-run-translation-note">{availabilityLabel}</span> : null}
                               {episode.annotation?.isFiller ? <span>Filler</span> : null}
                               {episode.annotation?.isRecap ? <span>Recap</span> : null}
                               {episode.progress?.completed ? <span>Complete</span> : null}
@@ -718,6 +687,24 @@ export function ShowPage() {
                   </div>
                 )}
               </div>
+
+              <aside className="show-run-side">
+                <div aria-label="Episode filters" className="show-run-filterrail" role="tablist">
+                  {EPISODE_FILTERS.map((filter) => (
+                    <button
+                      key={filter.value}
+                      aria-selected={episodeFilter === filter.value}
+                      className={episodeFilter === filter.value ? 'active' : undefined}
+                      role="tab"
+                      type="button"
+                      onClick={() => setEpisodeFilter(filter.value)}
+                    >
+                      <span>{filter.label}</span>
+                      <strong>{episodeFilterCounts[filter.value]}</strong>
+                    </button>
+                  ))}
+                </div>
+              </aside>
             </div>
           </section>
         </section>
@@ -849,7 +836,7 @@ function formatScore(value: number | null | undefined) {
     return null
   }
 
-  return `${value}`
+  return `${Math.round(value)}%`
 }
 
 function formatCompactNumber(value: number | null | undefined) {
@@ -1064,6 +1051,30 @@ function getEpisodeStateLabel(episode: ShowEpisode) {
   }
 
   return null
+}
+
+function getEpisodeAvailabilityLabel(
+  episode: ShowEpisode,
+  availableEpisodes: Record<TranslationType, number> | null,
+) {
+  const episodeNumber = Number(episode.number)
+
+  if (!availableEpisodes || !Number.isFinite(episodeNumber) || episodeNumber <= 0) {
+    return null
+  }
+
+  const hasSub = episodeNumber <= (availableEpisodes.sub ?? 0)
+  const hasDub = episodeNumber <= (availableEpisodes.dub ?? 0)
+
+  if (hasSub && hasDub) {
+    return null
+  }
+
+  if (hasDub) {
+    return 'Dub'
+  }
+
+  return 'Sub'
 }
 
 function formatEpisodeDuration(durationSeconds: number | null | undefined) {
