@@ -1,5 +1,5 @@
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Clock3, Play, Star, X } from 'lucide-react'
-import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { Link } from 'react-router-dom'
 
 import type {
@@ -51,17 +51,13 @@ interface ContextMenuState {
 interface ContextMenuAction {
   key: string
   label: string
-  description: string
-  icon: 'open' | 'watchLater' | 'complete' | 'remove'
+  icon: 'watchLater' | 'complete' | 'remove'
   tone?: 'default' | 'danger'
-  update?: LibraryUpdateInput
-  href?: string | null
+  update: LibraryUpdateInput
 }
 
-const CONTEXT_MENU_WIDTH = 288
-const CONTEXT_MENU_HEADER_HEIGHT = 92
-const CONTEXT_MENU_ACTION_HEIGHT = 56
-const CONTEXT_MENU_PADDING = 12
+const CONTEXT_MENU_WIDTH = 248
+const CONTEXT_MENU_HEIGHT = 220
 
 export function HomePage() {
   const { password, preferredTranslationType } = useSession()
@@ -114,11 +110,6 @@ export function HomePage() {
       return
     }
 
-    const animationFrameId = window.requestAnimationFrame(() => {
-      const firstAction = contextMenuRef.current?.querySelector<HTMLElement>('[data-context-menu-action]')
-      firstAction?.focus()
-    })
-
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target as Node | null
       if (target && contextMenuRef.current?.contains(target)) {
@@ -138,7 +129,6 @@ export function HomePage() {
     document.addEventListener('keydown', handleKeyDown)
 
     return () => {
-      window.cancelAnimationFrame(animationFrameId)
       document.removeEventListener('pointerdown', handlePointerDown)
       document.removeEventListener('keydown', handleKeyDown)
     }
@@ -368,11 +358,10 @@ export function HomePage() {
     }
 
     event.preventDefault()
-    const actions = buildContextMenuActions(item)
     setContextMenu({
       item,
       x: clampMenuCoordinate(event.clientX, CONTEXT_MENU_WIDTH, window.innerWidth),
-      y: clampMenuCoordinate(event.clientY, estimateContextMenuHeight(actions.length), window.innerHeight),
+      y: clampMenuCoordinate(event.clientY, CONTEXT_MENU_HEIGHT, window.innerHeight),
     })
   }
 
@@ -583,55 +572,23 @@ export function HomePage() {
         <div
           ref={contextMenuRef}
           className="library-context-menu"
-          aria-label={`${contextMenu.item.title} actions`}
           role="menu"
           style={{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }}
-          onKeyDown={(event) => handleContextMenuNavigation(event, contextMenuRef.current)}
         >
-          <div className="library-context-menu-header">
-            <strong>{contextMenu.item.title}</strong>
-            <span>{contextMenu.item.episodeLabel}</span>
-          </div>
-
-          <div className="library-context-menu-actions">
-            {contextMenuActions.map((action) =>
-              action.href ? (
-                <Link
-                  key={action.key}
-                  className="library-context-menu-action"
-                  data-context-menu-action="true"
-                  role="menuitem"
-                  to={action.href}
-                  onClick={() => setContextMenu(null)}
-                >
-                  <span className="library-context-menu-action-icon" aria-hidden="true">
-                    {renderContextMenuIcon(action.icon)}
-                  </span>
-                  <span className="library-context-menu-action-copy">
-                    <span>{action.label}</span>
-                    <small>{action.description}</small>
-                  </span>
-                </Link>
-              ) : (
-                <button
-                  key={action.key}
-                  className={`library-context-menu-action${action.tone === 'danger' ? ' is-danger' : ''}`}
-                  data-context-menu-action="true"
-                  role="menuitem"
-                  type="button"
-                  onClick={() => (action.update ? void handleLibraryAction(action.update) : undefined)}
-                >
-                  <span className="library-context-menu-action-icon" aria-hidden="true">
-                    {renderContextMenuIcon(action.icon)}
-                  </span>
-                  <span className="library-context-menu-action-copy">
-                    <span>{action.label}</span>
-                    <small>{action.description}</small>
-                  </span>
-                </button>
-              ),
-            )}
-          </div>
+          {contextMenuActions.map((action) => (
+            <button
+              key={action.key}
+              className={`library-context-menu-action${action.tone === 'danger' ? ' is-danger' : ''}`}
+              role="menuitem"
+              type="button"
+              onClick={() => void handleLibraryAction(action.update)}
+            >
+              <span className="library-context-menu-action-icon" aria-hidden="true">
+                {renderContextMenuIcon(action.icon)}
+              </span>
+              <span className="library-context-menu-action-copy">{action.label}</span>
+            </button>
+          ))}
         </div>
       ) : null}
     </section>
@@ -1091,23 +1048,12 @@ function buildContextMenuActions(item: RailItem): ContextMenuAction[] {
     posterUrl: item.posterUrl,
   }
 
-  const actions: ContextMenuAction[] = item.href
-    ? [
-        {
-          key: 'open-show',
-          label: 'Open show',
-          description: 'Jump to the full show page.',
-          href: item.href,
-          icon: 'open',
-        },
-      ]
-    : []
+  const actions: ContextMenuAction[] = []
 
   if (item.libraryEntry?.resumeEpisodeNumber) {
     actions.push({
       key: 'remove-current',
       label: 'Remove from currently watching',
-      description: 'Clear this title from your active queue.',
       icon: 'remove',
       tone: 'danger',
       update: {
@@ -1118,7 +1064,6 @@ function buildContextMenuActions(item: RailItem): ContextMenuAction[] {
     actions.push({
       key: 'move-watch-later',
       label: 'Move to watch later',
-      description: 'Take it out of progress and save it for later.',
       icon: 'watchLater',
       update: {
         ...baseUpdate,
@@ -1131,7 +1076,6 @@ function buildContextMenuActions(item: RailItem): ContextMenuAction[] {
     actions.push({
       key: item.libraryEntry?.watchLater ? 'remove-watch-later' : 'add-watch-later',
       label: item.libraryEntry?.watchLater ? 'Remove from watch later' : 'Add to watch later',
-      description: item.libraryEntry?.watchLater ? 'Keep it out of the saved list.' : 'Save it for easy return later.',
       icon: item.libraryEntry?.watchLater ? 'remove' : 'watchLater',
       tone: item.libraryEntry?.watchLater ? 'danger' : 'default',
       update: {
@@ -1144,7 +1088,6 @@ function buildContextMenuActions(item: RailItem): ContextMenuAction[] {
   actions.push({
     key: item.libraryEntry?.completed ? 'unmark-complete' : 'mark-complete',
     label: item.libraryEntry?.completed ? 'Remove from completed' : 'Mark as completed',
-    description: item.libraryEntry?.completed ? 'Put it back into your active library.' : 'File this title under completed shows.',
     icon: item.libraryEntry?.completed ? 'remove' : 'complete',
     tone: item.libraryEntry?.completed ? 'danger' : 'default',
     update: {
@@ -1159,8 +1102,6 @@ function buildContextMenuActions(item: RailItem): ContextMenuAction[] {
 
 function renderContextMenuIcon(icon: ContextMenuAction['icon']) {
   switch (icon) {
-    case 'open':
-      return <Play size={15} strokeWidth={2} />
     case 'watchLater':
       return <Clock3 size={15} strokeWidth={2} />
     case 'complete':
@@ -1169,40 +1110,6 @@ function renderContextMenuIcon(icon: ContextMenuAction['icon']) {
       return <X size={15} strokeWidth={2} />
     default:
       return null
-  }
-}
-
-function estimateContextMenuHeight(actionCount: number) {
-  return CONTEXT_MENU_HEADER_HEIGHT + actionCount * CONTEXT_MENU_ACTION_HEIGHT + CONTEXT_MENU_PADDING
-}
-
-function handleContextMenuNavigation(event: ReactKeyboardEvent<HTMLElement>, menu: HTMLDivElement | null) {
-  if (!menu) {
-    return
-  }
-
-  const actions = Array.from(menu.querySelectorAll<HTMLElement>('[data-context-menu-action]'))
-  if (!actions.length) {
-    return
-  }
-
-  const currentIndex = actions.findIndex((action) => action === document.activeElement)
-  const moveFocus = (nextIndex: number) => {
-    actions[(nextIndex + actions.length) % actions.length]?.focus()
-  }
-
-  if (event.key === 'ArrowDown') {
-    event.preventDefault()
-    moveFocus(currentIndex >= 0 ? currentIndex + 1 : 0)
-  } else if (event.key === 'ArrowUp') {
-    event.preventDefault()
-    moveFocus(currentIndex >= 0 ? currentIndex - 1 : actions.length - 1)
-  } else if (event.key === 'Home') {
-    event.preventDefault()
-    actions[0]?.focus()
-  } else if (event.key === 'End') {
-    event.preventDefault()
-    actions[actions.length - 1]?.focus()
   }
 }
 

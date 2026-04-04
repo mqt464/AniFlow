@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { App } from './App'
@@ -186,86 +186,5 @@ describe('App shell', () => {
         Object.defineProperty(HTMLElement.prototype, 'scrollLeft', scrollLeftDescriptor)
       }
     }
-  })
-
-  it('shows an improved context menu when right-clicking a homepage show', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
-      const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input)
-
-      if (url.includes('/api/home')) {
-        return new Response(
-          JSON.stringify({
-            continueWatching: [],
-            watchLater: [
-              {
-                id: 'watch-later-1',
-                showId: 'show-1',
-                title: 'Orbital Drift',
-                posterUrl: 'https://example.com/poster.jpg',
-                bannerUrl: null,
-                latestEpisodeNumber: null,
-                resumeEpisodeNumber: null,
-                resumeTimeSeconds: null,
-                watchedDurationSeconds: null,
-                totalDurationSeconds: null,
-                completed: false,
-                watchLater: true,
-                score: null,
-                providerShowId: 'show-1',
-                availableEpisodes: {
-                  sub: 12,
-                  dub: 0,
-                },
-              },
-            ],
-            completed: [],
-            recentProgress: [],
-            favorites: [],
-            discover: {
-              trending: [],
-              popularThisSeason: [],
-              upcomingNextSeason: [],
-            },
-            anilist: {
-              connected: false,
-              username: null,
-              avatarUrl: null,
-              bannerUrl: null,
-              profileUrl: null,
-              about: null,
-              connectedAt: null,
-              lastPullAt: null,
-              lastSyncStatus: null,
-            },
-            requiresPassword: false,
-          }),
-          {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          },
-        )
-      }
-
-      if (url.includes('/api/search')) {
-        return new Response(JSON.stringify({ query: 'test', results: [] }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        })
-      }
-
-      return new Response('Not found', { status: 404 })
-    })
-
-    render(<App />)
-
-    const card = (await screen.findByText('Orbital Drift')).closest('a')
-    expect(card).not.toBeNull()
-    fireEvent.contextMenu(card as HTMLElement, { clientX: 120, clientY: 160 })
-
-    const menu = await screen.findByRole('menu', { name: /orbital drift actions/i })
-    expect(within(menu).getByText('Orbital Drift')).toBeInTheDocument()
-    expect(within(menu).getByRole('menuitem', { name: /open show/i })).toBeInTheDocument()
-    expect(within(menu).getByRole('menuitem', { name: /remove from watch later/i })).toBeInTheDocument()
-    expect(within(menu).getByRole('menuitem', { name: /mark as completed/i })).toBeInTheDocument()
   })
 })

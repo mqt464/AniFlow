@@ -1484,50 +1484,25 @@ input::placeholder {
   position: fixed;
   z-index: 40;
   display: grid;
-  width: min(288px, calc(100vw - 24px));
-  overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  min-width: 248px;
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 10px;
-  background: #101014;
+  background: #141418;
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
 }
 
-.library-context-menu-header {
-  display: grid;
-  gap: 4px;
-  padding: 14px 14px 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.02);
-}
-
-.library-context-menu-header strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.95rem;
-}
-
-.library-context-menu-header span {
-  color: var(--text-muted);
-  font-size: 0.78rem;
-}
-
-.library-context-menu-actions {
-  display: grid;
-  gap: 2px;
-  padding: 6px;
-}
-
 .library-context-menu-action {
-  all: unset;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
+  justify-content: flex-start;
   gap: 12px;
   width: 100%;
-  min-height: 54px;
+  min-height: 44px;
   padding: 10px;
+  border: 0;
   border-radius: 8px;
-  cursor: pointer;
+  background: transparent;
   color: var(--text);
   text-align: left;
 }
@@ -1538,8 +1513,7 @@ input::placeholder {
 }
 
 .library-context-menu-action:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  background: #26262e;
 }
 
 .library-context-menu-action.is-danger {
@@ -1554,27 +1528,18 @@ input::placeholder {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  min-width: 18px;
-  margin-top: 2px;
+  width: 16px;
+  min-width: 16px;
   color: var(--text-muted);
 }
 
 .library-context-menu-action-copy {
-  display: grid;
-  gap: 2px;
+  display: block;
+  flex: 0 1 auto;
   min-width: 0;
-}
-
-.library-context-menu-action-copy span {
-  font-size: 0.9rem;
-  line-height: 1.25;
-}
-
-.library-context-menu-action-copy small {
-  color: var(--text-muted);
-  font-size: 0.75rem;
-  line-height: 1.3;
+  font-size: 0.86rem;
+  line-height: 1.2;
+  text-align: left;
 }
 
 .poster-progress {
