@@ -2,7 +2,8 @@ import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import process from 'node:process'
 
-const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+const npmCommand = process.platform === 'win32' ? 'npm' : 'npm'
+const windowsShell = process.env.ComSpec || 'cmd.exe'
 const useColor = Boolean(process.stdout.isTTY)
 
 const colors = {
@@ -44,7 +45,7 @@ function logFailure(message) {
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const child = spawn(...buildSpawnArgs(command, args), {
       stdio: 'inherit',
       shell: false,
       ...options,
@@ -64,7 +65,7 @@ function run(command, args, options = {}) {
 
 function capture(command, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const child = spawn(...buildSpawnArgs(command, args), {
       stdio: ['ignore', 'pipe', 'pipe'],
       shell: false,
       ...options,
@@ -91,6 +92,30 @@ function capture(command, args, options = {}) {
       reject(new Error(stderr.trim() || `${command} ${args.join(' ')} exited with code ${code ?? 'unknown'}`))
     })
   })
+}
+
+function buildSpawnArgs(command, args) {
+  if (process.platform !== 'win32' || command !== npmCommand) {
+    return [command, args]
+  }
+
+  return [windowsShell, ['/d', '/s', '/c', buildWindowsCommandLine(command, args)]]
+}
+
+function buildWindowsCommandLine(command, args) {
+  return [command, ...args].map(quoteWindowsCommandArg).join(' ')
+}
+
+function quoteWindowsCommandArg(value) {
+  if (!value) {
+    return '""'
+  }
+
+  if (!/[ \t"&()<>^|]/.test(value)) {
+    return value
+  }
+
+  return `"${value.replace(/"/g, '""')}"`
 }
 
 async function gitHead() {

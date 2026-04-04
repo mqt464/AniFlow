@@ -323,6 +323,8 @@ export class AniListService {
       if (shouldImportNow(connection.lastPullAt)) {
         await this.importRemoteState(false)
       }
+    } catch (error) {
+      this.database.setAniListStatus(formatAniListBackgroundSyncError(error))
     } finally {
       this.syncing = false
     }
@@ -932,6 +934,27 @@ function shouldImportNow(lastPullAt: string | null | undefined): boolean {
 
   const timestamp = Date.parse(lastPullAt)
   return !Number.isFinite(timestamp) || Date.now() - timestamp >= BACKGROUND_IMPORT_INTERVAL_MS
+}
+
+function formatAniListBackgroundSyncError(error: unknown): string {
+  const message = error instanceof Error ? error.message : 'AniList sync failed'
+  const status = extractAniListHttpStatus(message)
+
+  if (status === 401 || status === 403) {
+    return `AniList sync failed (status ${status}). Reconnect AniList in Settings to refresh the saved token.`
+  }
+
+  return message
+}
+
+function extractAniListHttpStatus(message: string): number | null {
+  const match = message.match(/\bstatus (\d{3})\b/i)
+  if (!match) {
+    return null
+  }
+
+  const status = Number.parseInt(match[1] ?? '', 10)
+  return Number.isFinite(status) ? status : null
 }
 
 function resolveDesiredStatus(payload: AniListSyncSnapshot): 'CURRENT' | 'PLANNING' | 'COMPLETED' | null {

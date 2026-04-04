@@ -762,4 +762,34 @@ describe('AniListService', () => {
       database.close()
     }
   })
+
+  it('stores a reconnect-required status instead of rejecting the background sync loop on AniList 403', async () => {
+    const env = createEnv()
+    const database = new AniFlowDatabase(env.dbPath)
+    const service = new AniListService(env, database, {} as never)
+
+    database.setAniListConnection({
+      viewerId: 7,
+      username: 'mat',
+      avatarUrl: null,
+      bannerUrl: null,
+      profileUrl: 'https://anilist.co/user/mat',
+      about: null,
+      accessToken: 'token',
+      refreshToken: null,
+      lastPullAt: null,
+      lastSyncStatus: 'Connected',
+    })
+
+    try {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('forbidden', { status: 403 }))
+
+      await expect((service as never as { runBackgroundSync: () => Promise<void> }).runBackgroundSync()).resolves.toBeUndefined()
+      expect(database.getAniListConnection()?.lastSyncStatus).toBe(
+        'AniList sync failed (status 403). Reconnect AniList in Settings to refresh the saved token.',
+      )
+    } finally {
+      database.close()
+    }
+  })
 })
