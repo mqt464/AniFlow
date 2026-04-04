@@ -957,9 +957,13 @@ function extractAniListHttpStatus(message: string): number | null {
   return Number.isFinite(status) ? status : null
 }
 
-function resolveDesiredStatus(payload: AniListSyncSnapshot): 'CURRENT' | 'PLANNING' | 'COMPLETED' | null {
+function resolveDesiredStatus(payload: AniListSyncSnapshot): 'CURRENT' | 'PLANNING' | 'COMPLETED' | 'DROPPED' | null {
   if (payload.completed) {
     return 'COMPLETED'
+  }
+
+  if (payload.dropped) {
+    return 'DROPPED'
   }
 
   if (payload.resumeEpisodeNumber || parseEpisodeValue(payload.latestEpisodeNumber) > 0) {

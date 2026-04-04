@@ -44,6 +44,7 @@ interface LibraryEntryRow {
   favorited: number
   watch_later: number
   completed: number
+  dropped: number
   completed_at: string | null
   anilist_media_id: number | null
 }
@@ -59,6 +60,7 @@ export interface AniListSyncSnapshot {
   favorited: boolean
   watchLater: boolean
   completed: boolean
+  dropped: boolean
   anilistMediaId: number | null
 }
 
@@ -129,6 +131,7 @@ export class AniFlowDatabase {
 
     ensureColumnExists(this.connection, 'library_entries', 'watch_later', 'INTEGER NOT NULL DEFAULT 0')
     ensureColumnExists(this.connection, 'library_entries', 'completed', 'INTEGER NOT NULL DEFAULT 0')
+    ensureColumnExists(this.connection, 'library_entries', 'dropped', 'INTEGER NOT NULL DEFAULT 0')
     ensureColumnExists(this.connection, 'library_entries', 'completed_at', 'TEXT')
     ensureColumnExists(this.connection, 'library_entries', 'anilist_media_id', 'INTEGER')
     ensureColumnExists(this.connection, 'anilist_connection', 'viewer_id', 'INTEGER')
@@ -214,8 +217,9 @@ export class AniFlowDatabase {
           favorited,
           watch_later,
           completed,
+          dropped,
           completed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(show_id) DO UPDATE SET
           title = excluded.title,
           poster_url = excluded.poster_url,
@@ -225,6 +229,7 @@ export class AniFlowDatabase {
           updated_at = excluded.updated_at,
           watch_later = excluded.watch_later,
           completed = excluded.completed,
+          dropped = excluded.dropped,
           completed_at = excluded.completed_at
       `)
       .run(
@@ -238,6 +243,7 @@ export class AniFlowDatabase {
         existingEntry?.favorited ?? 0,
         0,
         shouldResetShowCompletion ? 0 : existingEntry?.completed ?? 0,
+        0,
         shouldResetShowCompletion ? null : existingEntry?.completed_at ?? null,
       )
 
@@ -280,6 +286,7 @@ export class AniFlowDatabase {
           favorited,
           watch_later,
           completed,
+          dropped,
           completed_at,
           anilist_media_id
         FROM library_entries
@@ -307,6 +314,7 @@ export class AniFlowDatabase {
           favorited,
           watch_later,
           completed,
+          dropped,
           completed_at,
           anilist_media_id
         FROM library_entries
@@ -333,6 +341,7 @@ export class AniFlowDatabase {
           favorited,
           watch_later,
           completed,
+          dropped,
           completed_at,
           anilist_media_id
         FROM library_entries
@@ -360,6 +369,7 @@ export class AniFlowDatabase {
           favorited,
           watch_later,
           completed,
+          dropped,
           completed_at,
           anilist_media_id
         FROM library_entries
@@ -391,6 +401,7 @@ export class AniFlowDatabase {
           favorited,
           watch_later,
           completed,
+          dropped,
           completed_at,
           anilist_media_id
         FROM library_entries
@@ -407,6 +418,14 @@ export class AniFlowDatabase {
     const nextFavorited = input.favorited === undefined ? existing?.favorited ?? 0 : input.favorited ? 1 : 0
     const nextWatchLater = input.watchLater === undefined ? existing?.watch_later ?? 0 : input.watchLater ? 1 : 0
     const nextCompleted = input.completed === undefined ? existing?.completed ?? 0 : input.completed ? 1 : 0
+    const nextDropped =
+      input.removeFromContinueWatching === true
+        ? input.watchLater === true || input.completed === true
+          ? 0
+          : 1
+        : input.watchLater === true || input.completed === true
+          ? 0
+          : existing?.dropped ?? 0
 
     let latestEpisodeNumber = existing?.latest_episode_number ?? null
     let resumeEpisodeNumber = existing?.resume_episode_number ?? null
@@ -436,8 +455,9 @@ export class AniFlowDatabase {
           favorited,
           watch_later,
           completed,
+          dropped,
           completed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(show_id) DO UPDATE SET
           title = excluded.title,
           poster_url = excluded.poster_url,
@@ -448,6 +468,7 @@ export class AniFlowDatabase {
           favorited = excluded.favorited,
           watch_later = excluded.watch_later,
           completed = excluded.completed,
+          dropped = excluded.dropped,
           completed_at = excluded.completed_at
       `)
       .run(
@@ -461,6 +482,7 @@ export class AniFlowDatabase {
         nextFavorited,
         nextCompleted === 1 ? 0 : nextWatchLater,
         nextCompleted,
+        nextDropped,
         completedAt,
       )
 
@@ -484,6 +506,7 @@ export class AniFlowDatabase {
       favorited: row.favorited === 1,
       watchLater: row.watch_later === 1,
       completed: row.completed === 1,
+      dropped: row.dropped === 1,
       anilistMediaId: row.anilist_media_id,
     }
   }
@@ -502,12 +525,14 @@ export class AniFlowDatabase {
           favorited,
           watch_later,
           completed,
+          dropped,
           completed_at,
           anilist_media_id
         FROM library_entries
         WHERE favorited = 1
           OR watch_later = 1
           OR completed = 1
+          OR dropped = 1
           OR latest_episode_number IS NOT NULL
           OR resume_episode_number IS NOT NULL
           OR anilist_media_id IS NOT NULL
@@ -526,6 +551,7 @@ export class AniFlowDatabase {
       favorited: row.favorited === 1,
       watchLater: row.watch_later === 1,
       completed: row.completed === 1,
+      dropped: row.dropped === 1,
       anilistMediaId: row.anilist_media_id,
     }))
   }
@@ -567,6 +593,7 @@ export class AniFlowDatabase {
     const isCurrent = input.status === 'CURRENT' || input.status === 'REPEATING'
     const isWatchLater = input.status === 'PLANNING' || input.status === 'PAUSED'
     const isCompleted = input.status === 'COMPLETED'
+    const isDropped = input.status === 'DROPPED'
 
     const latestEpisodeNumber =
       normalizedProgress ??
@@ -585,9 +612,10 @@ export class AniFlowDatabase {
           favorited,
           watch_later,
           completed,
+          dropped,
           completed_at,
           anilist_media_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(show_id) DO UPDATE SET
           title = excluded.title,
           poster_url = excluded.poster_url,
@@ -598,6 +626,7 @@ export class AniFlowDatabase {
           favorited = excluded.favorited,
           watch_later = excluded.watch_later,
           completed = excluded.completed,
+          dropped = excluded.dropped,
           completed_at = excluded.completed_at,
           anilist_media_id = excluded.anilist_media_id
       `)
@@ -610,8 +639,9 @@ export class AniFlowDatabase {
         0,
         input.updatedAt,
         input.favorited ? 1 : 0,
-        isCompleted ? 0 : isWatchLater ? 1 : 0,
+        isCompleted || isDropped ? 0 : isWatchLater ? 1 : 0,
         isCompleted ? 1 : 0,
+        isDropped ? 1 : 0,
         isCompleted ? input.updatedAt : null,
         input.mediaId,
       )
@@ -665,6 +695,7 @@ export class AniFlowDatabase {
           favorited,
           watch_later,
           completed,
+          dropped,
           completed_at,
           anilist_media_id
         FROM library_entries

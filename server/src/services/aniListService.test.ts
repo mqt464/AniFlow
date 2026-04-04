@@ -210,7 +210,7 @@ describe('AniListService', () => {
     }
   })
 
-  it('backposts local watched, completed, and watch-later state during manual sync', async () => {
+  it('backposts local watched, completed, watch-later, and dropped state during manual sync', async () => {
     const env = createEnv()
     const database = new AniFlowDatabase(env.dbPath)
     const service = new AniListService(env, database, {} as never)
@@ -241,6 +241,19 @@ describe('AniListService', () => {
       showId: 'watch-later-show',
       title: 'Watch Later Show',
       watchLater: true,
+    })
+    database.saveProgress({
+      showId: 'dropped-show',
+      episodeNumber: '5',
+      title: 'Dropped Show',
+      currentTime: 900,
+      duration: 1400,
+      completed: false,
+    })
+    database.updateLibraryEntry({
+      showId: 'dropped-show',
+      title: 'Dropped Show',
+      removeFromContinueWatching: true,
     })
     database.setAniListConnection({
       viewerId: 7,
@@ -302,6 +315,7 @@ describe('AniListService', () => {
             'Completed Show': { id: 101, episodes: 12 },
             'Watched Show': { id: 102, episodes: 24 },
             'Watch Later Show': { id: 103, episodes: 13 },
+            'Dropped Show': { id: 104, episodes: 24 },
           }
           const media = mediaByTitle[search]
           if (!media) {
@@ -382,6 +396,7 @@ describe('AniListService', () => {
           { mediaId: 101, progress: 12, status: 'COMPLETED' },
           { mediaId: 102, progress: 3, status: 'CURRENT' },
           { mediaId: 103, progress: 0, status: 'PLANNING' },
+          { mediaId: 104, progress: 5, status: 'DROPPED' },
         ]),
       )
     } finally {
