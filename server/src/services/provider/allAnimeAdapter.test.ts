@@ -148,6 +148,56 @@ describe('parseAllAnimeProviderPayload', () => {
 })
 
 describe('AllAnimeAdapter AniList metadata lookup', () => {
+  it('uses JSON POST requests for AllAnime GraphQL queries', async () => {
+    const env = createEnv()
+    const database = new AniFlowDatabase(env.dbPath)
+    const adapter = new AllAnimeAdapter(env, database)
+
+    try {
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input)
+        expect(url).toBe('https://api.allanime.day/api')
+        expect(init?.method).toBe('POST')
+        expect(init?.headers).toMatchObject({
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          Referer: 'https://allmanga.to',
+          'User-Agent': 'Mozilla/5.0',
+        })
+
+        const body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as {
+          query?: string
+          variables?: { search?: { query?: string }; limit?: number; page?: number }
+        }
+        expect(body.query).toContain('shows(search:')
+        expect(body.variables).toMatchObject({
+          search: { query: 'Naruto' },
+          limit: 24,
+          page: 1,
+        })
+
+        return new Response(
+          JSON.stringify({
+            data: {
+              shows: {
+                edges: [],
+              },
+            },
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          },
+        )
+      })
+
+      await expect(adapter.search('Naruto')).resolves.toEqual([])
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    } finally {
+      database.close()
+    }
+  })
+
   it('retries the fallback AniList GraphQL endpoint after a 404', async () => {
     const env = createEnv()
     const database = new AniFlowDatabase(env.dbPath)

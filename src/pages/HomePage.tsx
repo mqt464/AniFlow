@@ -612,6 +612,7 @@ function PosterRail({
   const [hasOverflow, setHasOverflow] = useState(false)
   const [canScrollLeft, setCanScrollLeft] = useState(false)
   const [canScrollRight, setCanScrollRight] = useState(false)
+  const shouldRenderScrollButtons = items.length > 1
 
   useEffect(() => {
     const rail = railRef.current
@@ -693,7 +694,7 @@ function PosterRail({
         </div>
       ) : items.length ? (
         <div className="poster-rail-shell">
-          {hasOverflow ? (
+          {shouldRenderScrollButtons ? (
             <button
               aria-label={`Scroll ${title} left`}
               className="rail-scroll-button rail-scroll-button-left"
@@ -730,7 +731,7 @@ function PosterRail({
             )}
           </div>
 
-          {hasOverflow ? (
+          {shouldRenderScrollButtons ? (
             <button
               aria-label={`Scroll ${title} right`}
               className="rail-scroll-button rail-scroll-button-right"

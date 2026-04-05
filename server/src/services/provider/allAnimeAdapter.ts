@@ -550,15 +550,18 @@ export class AllAnimeAdapter {
   }
 
   private async query<T>(query: string, variables: Record<string, unknown>): Promise<T> {
-    const url = new URL('https://api.allanime.day/api')
-    url.searchParams.set('query', query)
-    url.searchParams.set('variables', JSON.stringify(variables))
-
-    const response = await fetch(url, {
+    const response = await fetch('https://api.allanime.day/api', {
+      method: 'POST',
       headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
         Referer: this.env.allAnimeReferer,
         'User-Agent': 'Mozilla/5.0',
       },
+      body: JSON.stringify({
+        query,
+        variables,
+      }),
     })
 
     if (!response.ok) {
