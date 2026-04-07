@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
@@ -78,12 +78,65 @@ describe('ShowPage', () => {
     expect(layout?.firstElementChild).toHaveClass('show-run-main')
     expect(layout?.lastElementChild).toHaveClass('show-run-side')
   })
+
+  it('updates favorite and dropped library states from the hero actions', async () => {
+    const requests: LibraryUpdateInput[] = []
+    mockShowPageResponse(buildPayload(), {
+      onLibraryUpdate(input) {
+        requests.push(input)
+      },
+    })
+    const user = userEvent.setup()
+
+    renderPage()
+
+    expect(await screen.findByRole('heading', { name: 'Demo Show' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Favorite' }))
+
+    await waitFor(() => {
+      expect(requests[0]).toMatchObject({
+        showId: 'demo-show',
+        favorited: true,
+      })
+    })
+
+    expect(screen.getByRole('button', { name: 'Favorited' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Mark as dropped' }))
+
+    await waitFor(() => {
+      expect(requests[1]).toMatchObject({
+        showId: 'demo-show',
+        watchLater: false,
+        completed: false,
+        dropped: true,
+        removeFromContinueWatching: true,
+      })
+    })
+
+    expect(screen.getByRole('button', { name: 'Dropped' })).toBeInTheDocument()
+  })
+
+  it('keeps sub-only episodes visible while browsing in dub mode and links them in sub mode', async () => {
+    mockShowPageResponse(buildPayload({ translationType: 'dub' }))
+    const user = userEvent.setup()
+
+    renderPage('dub')
+
+    expect(await screen.findByRole('heading', { name: 'Demo Show' })).toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: 'Episodes' }))
+
+    const latestEpisode = screen.getByRole('link', { name: /what came before/i })
+    expect(latestEpisode).toHaveTextContent('Sub')
+    expect(latestEpisode.getAttribute('href')).toContain('/player/demo-show/3?mode=sub')
+  })
 })
 
-function renderPage() {
+function renderPage(mode: 'sub' | 'dub' = 'sub') {
   render(
     <SessionContext.Provider value={sessionValue}>
-      <MemoryRouter initialEntries={['/shows/demo-show?mode=sub']}>
+      <MemoryRouter initialEntries={[`/shows/demo-show?mode=${mode}`]}>
         <Routes>
           <Route path="/shows/:showId" element={<ShowPage />} />
         </Routes>
@@ -92,11 +145,24 @@ function renderPage() {
   )
 }
 
-function mockShowPageResponse(payload: ReturnType<typeof buildPayload>) {
-  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+function mockShowPageResponse(
+  payload: ReturnType<typeof buildPayload>,
+  options: { onLibraryUpdate?: (input: LibraryUpdateInput) => void } = {},
+) {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input)
-    if (url === '/api/shows/demo-show/page?translationType=sub') {
+    if (url === '/api/shows/demo-show/page?translationType=sub' || url === '/api/shows/demo-show/page?translationType=dub') {
       return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+
+    if (url === '/api/library' && init?.method === 'POST') {
+      const body = JSON.parse(String(init.body)) as LibraryUpdateInput
+      options.onLibraryUpdate?.(body)
+
+      return new Response(JSON.stringify({ entry: body }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })
@@ -106,7 +172,8 @@ function mockShowPageResponse(payload: ReturnType<typeof buildPayload>) {
   })
 }
 
-function buildPayload() {
+function buildPayload(options: { translationType?: 'sub' | 'dub' } = {}) {
+  const translationType = options.translationType ?? 'sub'
   return {
     show: {
       id: 'demo-show',
@@ -196,7 +263,7 @@ function buildPayload() {
       ],
       reviews: [],
     },
-    translationType: 'sub' as const,
+    translationType,
     malRank: 17,
     malPopularity: 317,
     episodes: [
@@ -204,7 +271,7 @@ function buildPayload() {
         showId: 'demo-show',
         number: '1',
         title: 'Arrival',
-        translationType: 'sub' as const,
+        translationType,
         durationSeconds: 1440,
         thumbnailUrl: null,
         progress: { currentTime: 1440, duration: 1440, completed: true, updatedAt: '2026-04-03T00:00:00.000Z' },
@@ -215,7 +282,7 @@ function buildPayload() {
         showId: 'demo-show',
         number: '2',
         title: 'Training Day',
-        translationType: 'sub' as const,
+        translationType,
         durationSeconds: 1440,
         thumbnailUrl: null,
         progress: { currentTime: 540, duration: 1440, completed: false, updatedAt: '2026-04-03T00:00:00.000Z' },
@@ -253,6 +320,7 @@ function buildPayload() {
       favorited: false,
       watchLater: false,
       completed: false,
+      dropped: false,
       completedAt: null,
     },
     fillerSource: 'jikan' as const,

@@ -1,4 +1,4 @@
-import { Check, ChevronDown, ChevronLeft, ChevronRight, Clock3, Play, Star, X } from 'lucide-react'
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Clock3, Heart, Play, Star, X } from 'lucide-react'
 import { Fragment, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { Link } from 'react-router-dom'
 
@@ -29,7 +29,7 @@ const RAIL_SKELETON_COUNT = 6
 
 interface RailItem {
   id: string
-  kind: 'continue' | 'watchLater' | 'completed' | 'discover'
+  kind: 'continue' | 'watchLater' | 'completed' | 'favorite' | 'dropped' | 'discover'
   showId: string | null
   href: string | null
   title: string
@@ -51,13 +51,13 @@ interface ContextMenuState {
 interface ContextMenuAction {
   key: string
   label: string
-  icon: 'watchLater' | 'complete' | 'remove'
+  icon: 'watchLater' | 'complete' | 'favorite' | 'remove'
   tone?: 'default' | 'danger'
   update: LibraryUpdateInput
 }
 
 const CONTEXT_MENU_WIDTH = 248
-const CONTEXT_MENU_HEIGHT = 220
+const CONTEXT_MENU_HEIGHT = 320
 
 export function HomePage() {
   const { password, preferredTranslationType } = useSession()
@@ -137,6 +137,8 @@ export function HomePage() {
   const continueWatching = data?.continueWatching ?? EMPTY_LIBRARY
   const watchLater = data?.watchLater ?? EMPTY_LIBRARY
   const completed = data?.completed ?? EMPTY_LIBRARY
+  const favorites = data?.favorites ?? EMPTY_LIBRARY
+  const dropped = data?.dropped ?? EMPTY_LIBRARY
   const recentProgress = data?.recentProgress ?? EMPTY_PROGRESS
   const discover = data?.discover ?? EMPTY_DISCOVER
 
@@ -151,12 +153,20 @@ export function HomePage() {
       map.set(entry.showId, entry)
     }
 
+    for (const entry of favorites) {
+      map.set(entry.showId, entry)
+    }
+
+    for (const entry of dropped) {
+      map.set(entry.showId, entry)
+    }
+
     for (const entry of continueWatching) {
       map.set(entry.showId, entry)
     }
 
     return map
-  }, [completed, continueWatching, watchLater])
+  }, [completed, continueWatching, dropped, favorites, watchLater])
 
   const recentByShowId = useMemo(() => {
     const map = new Map<string, WatchProgress>()
@@ -186,12 +196,20 @@ export function HomePage() {
       uniqueTitles.set(entry.showId, { showId: entry.showId, title: entry.title })
     }
 
+    for (const entry of favorites) {
+      uniqueTitles.set(entry.showId, { showId: entry.showId, title: entry.title })
+    }
+
+    for (const entry of dropped) {
+      uniqueTitles.set(entry.showId, { showId: entry.showId, title: entry.title })
+    }
+
     for (const entry of recentByShowId.values()) {
       uniqueTitles.set(entry.showId, { showId: entry.showId, title: entry.title })
     }
 
     return Array.from(uniqueTitles.values())
-  }, [completed, continueWatching, recentByShowId, watchLater])
+  }, [completed, continueWatching, dropped, favorites, recentByShowId, watchLater])
 
   useEffect(() => {
     if (!metadataRequests.length) {
@@ -332,6 +350,51 @@ export function HomePage() {
       libraryEntry: entry,
       episodeLabel: entry.latestEpisodeNumber ? `Completed through ep ${entry.latestEpisodeNumber}` : 'Completed',
       hasNewEpisode,
+    } satisfies RailItem
+  })
+
+  const favoriteItems = favorites.map((entry) => {
+    const metadata = metadataByShowId[entry.showId]
+    const latestAvailableEpisode = getLatestAvailableEpisode(metadata?.availableEpisodes)
+    const hasNewEpisode = hasNewEpisodeAvailable(entry.latestEpisodeNumber, latestAvailableEpisode)
+    const progressEntry = recentByShowId.get(entry.showId)
+    const resumeSnapshot =
+      entry.resumeEpisodeNumber || progressEntry ? getResumeSnapshot(entry, recentProgress) : null
+
+    return {
+      id: entry.showId,
+      kind: 'favorite',
+      showId: entry.showId,
+      href: resolveShowHref(entry.showId, libraryByShowId, recentByShowId, preferredTranslationType),
+      title: metadata?.title ?? entry.title,
+      posterUrl: entry.posterUrl ?? metadata?.posterUrl ?? metadata?.bannerUrl ?? null,
+      rating: metadata?.score ?? null,
+      libraryEntry: entry,
+      episodeLabel: buildFavoriteEpisodeLabel(entry, latestAvailableEpisode),
+      hasNewEpisode,
+      progressPercent: resumeSnapshot?.progressPercent,
+      progressLabel:
+        resumeSnapshot && resumeSnapshot.currentTime > 0
+          ? formatTimeRange(resumeSnapshot.currentTime, resumeSnapshot.duration)
+          : null,
+    } satisfies RailItem
+  })
+
+  const droppedItems = dropped.map((entry) => {
+    const metadata = metadataByShowId[entry.showId]
+    const latestAvailableEpisode = getLatestAvailableEpisode(metadata?.availableEpisodes)
+
+    return {
+      id: entry.showId,
+      kind: 'dropped',
+      showId: entry.showId,
+      href: withMode(`/shows/${entry.showId}`, preferredTranslationType),
+      title: metadata?.title ?? entry.title,
+      posterUrl: entry.posterUrl ?? metadata?.posterUrl ?? metadata?.bannerUrl ?? null,
+      rating: metadata?.score ?? null,
+      libraryEntry: entry,
+      episodeLabel: buildDroppedEpisodeLabel(entry, latestAvailableEpisode),
+      hasNewEpisode: false,
     } satisfies RailItem
   })
 
@@ -537,6 +600,16 @@ export function HomePage() {
         title="Watch later"
       />
 
+      {isInitialLoading || favoriteItems.length ? (
+        <PosterRail
+          emptyMessage="Favorite titles will collect here."
+          items={favoriteItems}
+          loading={isInitialLoading}
+          onItemContextMenu={handleItemContextMenu}
+          title="Favorites"
+        />
+      ) : null}
+
       <PosterRail
         items={trendingItems}
         loading={isInitialLoading}
@@ -565,6 +638,16 @@ export function HomePage() {
           loading={isInitialLoading}
           onItemContextMenu={handleItemContextMenu}
           title="Completed"
+        />
+      ) : null}
+
+      {isInitialLoading || droppedItems.length ? (
+        <PosterRail
+          emptyMessage="Dropped shows will appear here after you archive them from the show page or home rails."
+          items={droppedItems}
+          loading={isInitialLoading}
+          onItemContextMenu={handleItemContextMenu}
+          title="Dropped"
         />
       ) : null}
 
@@ -774,10 +857,24 @@ function FeaturedCarouselSkeleton() {
 }
 
 function RailCardContent({ item }: { item: RailItem }) {
+  const hasStateBadges = Boolean(item.libraryEntry?.favorited || item.libraryEntry?.dropped || item.hasNewEpisode)
+
   return (
     <>
       <div className="poster-card-media">
         <PosterImage alt={`${item.title} poster`} className="poster-card-image" src={item.posterUrl} />
+
+        {hasStateBadges ? (
+          <div className="poster-card-badges">
+            <div className="poster-card-badges-start">
+              {item.libraryEntry?.favorited ? <span className="poster-card-badge">Favorite</span> : null}
+              {item.libraryEntry?.dropped ? <span className="poster-card-badge">Dropped</span> : null}
+            </div>
+            <div className="poster-card-badges-end">
+              {item.hasNewEpisode ? <span className="poster-card-badge">New ep</span> : null}
+            </div>
+          </div>
+        ) : null}
 
         {typeof item.progressPercent === 'number' ? (
           <div className="poster-card-canvas-progress">
@@ -937,7 +1034,7 @@ function resolveShowHref(
 ) {
   const libraryEntry = libraryByShowId.get(showId)
   if (libraryEntry) {
-    if (libraryEntry.completed && !libraryEntry.resumeEpisodeNumber) {
+    if ((libraryEntry.completed || libraryEntry.dropped) && !libraryEntry.resumeEpisodeNumber) {
       return withMode(`/shows/${showId}`, translationType)
     }
 
@@ -982,6 +1079,35 @@ function buildQueuedEpisodeLabel(latestAvailableEpisode: string | null, status: 
   }
 
   return 'Stream status pending'
+}
+
+function buildFavoriteEpisodeLabel(entry: LibraryEntry, latestAvailableEpisode: string | null) {
+  if (entry.resumeEpisodeNumber) {
+    return `Resume episode ${entry.resumeEpisodeNumber}`
+  }
+
+  if (entry.completed) {
+    return entry.latestEpisodeNumber ? `Favorite • completed through ep ${entry.latestEpisodeNumber}` : 'Favorite • completed'
+  }
+
+  if (entry.watchLater) {
+    return latestAvailableEpisode ? `Favorite • latest episode ${latestAvailableEpisode}` : 'Favorite • queued'
+  }
+
+  if (entry.dropped) {
+    return buildDroppedEpisodeLabel(entry, latestAvailableEpisode)
+  }
+
+  if (latestAvailableEpisode) {
+    return `Favorite • latest episode ${latestAvailableEpisode}`
+  }
+
+  return 'Favorite'
+}
+
+function buildDroppedEpisodeLabel(entry: LibraryEntry, latestAvailableEpisode: string | null) {
+  const referenceEpisode = entry.latestEpisodeNumber ?? entry.resumeEpisodeNumber ?? latestAvailableEpisode
+  return referenceEpisode ? `Dropped after episode ${referenceEpisode}` : 'Dropped'
 }
 
 function getLatestAvailableEpisode(availableEpisodes?: Record<TranslationType, number> | null) {
@@ -1051,14 +1177,26 @@ function buildContextMenuActions(item: RailItem): ContextMenuAction[] {
 
   const actions: ContextMenuAction[] = []
 
+  actions.push({
+    key: item.libraryEntry?.favorited ? 'remove-favorite' : 'add-favorite',
+    label: item.libraryEntry?.favorited ? 'Remove from favorites' : 'Add to favorites',
+    icon: 'favorite',
+    tone: item.libraryEntry?.favorited ? 'danger' : 'default',
+    update: {
+      ...baseUpdate,
+      favorited: !item.libraryEntry?.favorited,
+    },
+  })
+
   if (item.libraryEntry?.resumeEpisodeNumber) {
     actions.push({
       key: 'remove-current',
-      label: 'Remove from currently watching',
+      label: 'Move to dropped',
       icon: 'remove',
       tone: 'danger',
       update: {
         ...baseUpdate,
+        dropped: true,
         removeFromContinueWatching: true,
       },
     })
@@ -1070,6 +1208,7 @@ function buildContextMenuActions(item: RailItem): ContextMenuAction[] {
         ...baseUpdate,
         watchLater: true,
         completed: false,
+        dropped: false,
         removeFromContinueWatching: true,
       },
     })
@@ -1082,6 +1221,23 @@ function buildContextMenuActions(item: RailItem): ContextMenuAction[] {
       update: {
         ...baseUpdate,
         watchLater: !item.libraryEntry?.watchLater,
+        dropped: item.libraryEntry?.watchLater ? (item.libraryEntry?.dropped ?? false) : false,
+      },
+    })
+  }
+
+  if (!item.libraryEntry?.resumeEpisodeNumber) {
+    actions.push({
+      key: item.libraryEntry?.dropped ? 'restore-dropped' : 'mark-dropped',
+      label: item.libraryEntry?.dropped ? 'Restore from dropped' : 'Mark as dropped',
+      icon: item.libraryEntry?.dropped ? 'complete' : 'remove',
+      tone: item.libraryEntry?.dropped ? 'default' : 'danger',
+      update: {
+        ...baseUpdate,
+        watchLater: false,
+        completed: false,
+        dropped: !item.libraryEntry?.dropped,
+        removeFromContinueWatching: !item.libraryEntry?.dropped,
       },
     })
   }
@@ -1095,6 +1251,7 @@ function buildContextMenuActions(item: RailItem): ContextMenuAction[] {
       ...baseUpdate,
       completed: !item.libraryEntry?.completed,
       watchLater: item.libraryEntry?.completed ? item.libraryEntry.watchLater : false,
+      dropped: false,
     },
   })
 
@@ -1107,6 +1264,8 @@ function renderContextMenuIcon(icon: ContextMenuAction['icon']) {
       return <Clock3 size={15} strokeWidth={2} />
     case 'complete':
       return <Check size={15} strokeWidth={2} />
+    case 'favorite':
+      return <Heart size={15} strokeWidth={2} />
     case 'remove':
       return <X size={15} strokeWidth={2} />
     default:

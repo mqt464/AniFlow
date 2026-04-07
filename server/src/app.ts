@@ -7,6 +7,7 @@ import { z } from 'zod'
 
 import type {
   AniListConnectInput,
+  EpisodeSummary,
   EpisodeAnnotation,
   HomePayload,
   LibraryUpdateInput,
@@ -62,6 +63,7 @@ const librarySchema = z.object({
   favorited: z.boolean().optional(),
   watchLater: z.boolean().optional(),
   completed: z.boolean().optional(),
+  dropped: z.boolean().optional(),
   removeFromContinueWatching: z.boolean().optional(),
 })
 
@@ -110,6 +112,7 @@ export function buildApp(env: AppEnv) {
     continueWatching: database.getContinueWatching(),
     watchLater: database.getWatchLater(),
     completed: database.getCompleted(),
+    dropped: database.getDropped(),
     recentProgress: database.getRecentProgress(),
     favorites: database.getFavorites(),
     discover: await aniList.getHomeDiscover(),
@@ -134,8 +137,14 @@ export function buildApp(env: AppEnv) {
     const { id } = request.params as { id: string }
     const translationType = ((request.query as { translationType?: TranslationType }).translationType ??
       'sub') as TranslationType
+    const alternateTranslationType: TranslationType = translationType === 'sub' ? 'dub' : 'sub'
 
-    const [show, episodes] = await Promise.all([provider.getShow(id), provider.getEpisodes(id, translationType)])
+    const [show, preferredEpisodes, alternateEpisodes] = await Promise.all([
+      provider.getShow(id),
+      provider.getEpisodes(id, translationType),
+      provider.getEpisodes(id, alternateTranslationType).catch(() => []),
+    ])
+    const episodes = mergeShowPageEpisodes(preferredEpisodes, alternateEpisodes, translationType)
     const [aniListDetails, progressByEpisode, progressSummary, annotations] = await Promise.all([
       provider.getAniListDetails(show).catch(() => null),
       Promise.resolve(database.getShowEpisodeProgress(id)),
@@ -180,7 +189,7 @@ export function buildApp(env: AppEnv) {
     }
   })
 
-  app.post('/api/playback/resolve', async (request): Promise<ResolvedStream> => {
+  app.post('/api/playback/resolve', async (request, reply): Promise<ResolvedStream | void> => {
     const input = playbackSchema.parse(request.body) as PlaybackResolveInput
     const translationType = input.translationType ?? 'sub'
     const showPromise = withTimeout(
@@ -197,7 +206,13 @@ export function buildApp(env: AppEnv) {
       provider.resolvePlayback(input.showId, input.episodeNumber, translationType),
       PLAYBACK_RESOLVE_TIMEOUT_MS,
       'Timed out resolving this stream',
-    )
+    ).catch((error: unknown) => {
+      const failure = mapPlaybackResolveFailure(error)
+      return reply.code(failure.statusCode).send({ message: failure.message })
+    })
+    if (!candidate) {
+      return
+    }
     const [show, episodes] = await Promise.all([showPromise, episodesPromise])
 
     const mainSession = proxySessions.create({
@@ -353,6 +368,64 @@ export function buildApp(env: AppEnv) {
   })
 
   return app
+}
+
+function mergeShowPageEpisodes(
+  preferredEpisodes: EpisodeSummary[],
+  alternateEpisodes: EpisodeSummary[],
+  preferredTranslationType: TranslationType,
+): EpisodeSummary[] {
+  const merged = new Map<string, EpisodeSummary>()
+
+  for (const episode of alternateEpisodes) {
+    merged.set(episode.number, episode)
+  }
+
+  for (const episode of preferredEpisodes) {
+    merged.set(episode.number, {
+      ...episode,
+      translationType: preferredTranslationType,
+    })
+  }
+
+  return Array.from(merged.values()).sort(
+    (left, right) => parseEpisodeOrder(left.number) - parseEpisodeOrder(right.number),
+  )
+}
+
+function parseEpisodeOrder(value: string): number {
+  const parsed = Number.parseFloat(value)
+  return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER
+}
+
+function mapPlaybackResolveFailure(error: unknown): { statusCode: number; message: string } {
+  const message = error instanceof Error ? error.message : 'Unable to resolve this stream right now'
+
+  if (message.includes('Timed out resolving this stream')) {
+    return {
+      statusCode: 504,
+      message: 'Playback resolution timed out for this episode. Try again in a moment.',
+    }
+  }
+
+  if (message.includes('No playable sources were available for this episode')) {
+    return {
+      statusCode: 502,
+      message: 'No playable sources were available for this episode right now.',
+    }
+  }
+
+  if (message.includes('Show not found')) {
+    return {
+      statusCode: 404,
+      message: 'This show could not be found on the provider.',
+    }
+  }
+
+  return {
+    statusCode: 502,
+    message: 'Unable to resolve playback for this episode right now.',
+  }
 }
 
 function hasSkipSegment(segments: ResolvedStream['skipSegments'], label: string) {

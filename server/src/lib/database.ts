@@ -382,6 +382,35 @@ export class AniFlowDatabase {
     return rows.map(mapLibraryEntry)
   }
 
+  getDropped(limit = 12): LibraryEntry[] {
+    const rows = this.connection
+      .prepare(`
+        SELECT
+          show_id,
+          title,
+          poster_url,
+          latest_episode_number,
+          resume_episode_number,
+          resume_time,
+          updated_at,
+          favorited,
+          watch_later,
+          completed,
+          dropped,
+          completed_at,
+          anilist_media_id
+        FROM library_entries
+        WHERE dropped = 1
+          AND completed = 0
+          AND watch_later = 0
+        ORDER BY updated_at DESC
+        LIMIT ?
+      `)
+      .all(limit) as unknown as LibraryEntryRow[]
+
+    return rows.map(mapLibraryEntry)
+  }
+
   getLibraryEntry(showId: string): LibraryEntry | null {
     const row = this.getLibraryEntryRow(showId)
     return row ? mapLibraryEntry(row) : null
@@ -419,13 +448,17 @@ export class AniFlowDatabase {
     const nextWatchLater = input.watchLater === undefined ? existing?.watch_later ?? 0 : input.watchLater ? 1 : 0
     const nextCompleted = input.completed === undefined ? existing?.completed ?? 0 : input.completed ? 1 : 0
     const nextDropped =
-      input.removeFromContinueWatching === true
-        ? input.watchLater === true || input.completed === true
-          ? 0
-          : 1
-        : input.watchLater === true || input.completed === true
-          ? 0
-          : existing?.dropped ?? 0
+      input.dropped !== undefined
+        ? input.dropped
+          ? 1
+          : 0
+        : input.removeFromContinueWatching === true
+          ? input.watchLater === true || input.completed === true
+            ? 0
+            : 1
+          : input.watchLater === true || input.completed === true
+            ? 0
+            : existing?.dropped ?? 0
 
     let latestEpisodeNumber = existing?.latest_episode_number ?? null
     let resumeEpisodeNumber = existing?.resume_episode_number ?? null
@@ -976,6 +1009,7 @@ function mapLibraryEntry(row: LibraryEntryRow): LibraryEntry {
     favorited: row.favorited === 1,
     watchLater: row.watch_later === 1,
     completed: row.completed === 1,
+    dropped: row.dropped === 1,
     completedAt: row.completed_at,
   }
 }

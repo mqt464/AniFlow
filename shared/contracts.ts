@@ -237,6 +237,7 @@ export interface LibraryEntry {
   favorited: boolean
   watchLater: boolean
   completed: boolean
+  dropped: boolean
   completedAt: string | null
 }
 
@@ -247,6 +248,7 @@ export interface LibraryUpdateInput {
   favorited?: boolean
   watchLater?: boolean
   completed?: boolean
+  dropped?: boolean
   removeFromContinueWatching?: boolean
 }
 
@@ -266,6 +268,7 @@ export interface HomePayload {
   continueWatching: LibraryEntry[]
   watchLater: LibraryEntry[]
   completed: LibraryEntry[]
+  dropped: LibraryEntry[]
   recentProgress: WatchProgress[]
   favorites: LibraryEntry[]
   discover: {

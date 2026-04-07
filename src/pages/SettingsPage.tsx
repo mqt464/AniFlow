@@ -20,8 +20,16 @@ const ANILIST_SYNC_FEATURES = [
     detail: 'Pushes queued shows to AniList as planning entries.',
   },
   {
+    title: 'Favorites',
+    detail: 'Keeps AniFlow favorites aligned with AniList favourites.',
+  },
+  {
     title: 'Completed',
     detail: 'Marks finished anime as completed on AniList.',
+  },
+  {
+    title: 'Dropped',
+    detail: 'Sends archived shows to AniList as dropped entries.',
   },
 ] as const
 
@@ -367,8 +375,9 @@ export function SettingsPage() {
         <div className="settings-anilist-instructions">
           <strong>Get a token</strong>
           <p className="form-hint">
-            AniFlow syncs currently watching progress, <span className="settings-inline-code">Watch later</span>, and{' '}
-            <span className="settings-inline-code">Completed</span> with AniList.
+            AniFlow syncs currently watching progress, <span className="settings-inline-code">Watch later</span>,{' '}
+            <span className="settings-inline-code">Favorites</span>, <span className="settings-inline-code">Completed</span>,
+            {' '}and <span className="settings-inline-code">Dropped</span> with AniList.
           </p>
           <ol className="settings-steps">
             <li>

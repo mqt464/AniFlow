@@ -8,6 +8,7 @@ import {
   LoaderCircle,
   Search,
   Star,
+  X,
 } from 'lucide-react'
 import { Fragment, useDeferredValue, useEffect, useMemo, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
@@ -111,6 +112,7 @@ export function ShowPage() {
   )
   const libraryButtonsDisabled = libraryAction !== null || !show
   const showCompleted = Boolean(libraryEntry?.completed)
+  const showDropped = Boolean(libraryEntry?.dropped)
 
   useEffect(() => {
     setSynopsisExpanded(false)
@@ -370,6 +372,32 @@ export function ShowPage() {
                 ) : null}
 
                 <button
+                  className={libraryEntry?.favorited ? 'show-canvas-chip active' : 'show-canvas-chip'}
+                  disabled={libraryButtonsDisabled}
+                  type="button"
+                  onClick={() =>
+                    baseLibraryUpdate
+                      ? void runLibraryAction('favorite', {
+                          ...baseLibraryUpdate,
+                          favorited: !libraryEntry?.favorited,
+                        })
+                      : undefined
+                  }
+                >
+                  {libraryAction === 'favorite' ? (
+                    <>
+                      <LoaderCircle className="spin" size={16} strokeWidth={2} />
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <Heart className="show-canvas-chip-icon" size={15} strokeWidth={1.9} />
+                      <span>{libraryEntry?.favorited ? 'Favorited' : 'Favorite'}</span>
+                    </>
+                  )}
+                </button>
+
+                <button
                   className={libraryEntry?.watchLater ? 'show-canvas-chip active' : 'show-canvas-chip'}
                   disabled={libraryButtonsDisabled}
                   type="button"
@@ -379,6 +407,7 @@ export function ShowPage() {
                           ...baseLibraryUpdate,
                           watchLater: !libraryEntry?.watchLater,
                           completed: false,
+                          dropped: false,
                           removeFromContinueWatching: !libraryEntry?.watchLater && Boolean(libraryEntry?.resumeEpisodeNumber),
                         })
                       : undefined
@@ -407,6 +436,7 @@ export function ShowPage() {
                           ...baseLibraryUpdate,
                           completed: !libraryEntry?.completed,
                           watchLater: libraryEntry?.completed ? libraryEntry.watchLater : false,
+                          dropped: false,
                         })
                       : undefined
                   }
@@ -420,6 +450,35 @@ export function ShowPage() {
                     <>
                       <Check className="show-canvas-chip-icon show-canvas-chip-icon-check" size={15} strokeWidth={2} />
                       <span>{libraryEntry?.completed ? 'Watched' : 'Mark as watched'}</span>
+                    </>
+                  )}
+                </button>
+
+                <button
+                  className={showDropped ? 'show-canvas-chip active' : 'show-canvas-chip'}
+                  disabled={libraryButtonsDisabled}
+                  type="button"
+                  onClick={() =>
+                    baseLibraryUpdate
+                      ? void runLibraryAction('dropped', {
+                          ...baseLibraryUpdate,
+                          watchLater: false,
+                          completed: false,
+                          dropped: !showDropped,
+                          removeFromContinueWatching: !showDropped,
+                        })
+                      : undefined
+                  }
+                >
+                  {libraryAction === 'dropped' ? (
+                    <>
+                      <LoaderCircle className="spin" size={16} strokeWidth={2} />
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <X className="show-canvas-chip-icon" size={15} strokeWidth={2} />
+                      <span>{showDropped ? 'Dropped' : 'Mark as dropped'}</span>
                     </>
                   )}
                 </button>
@@ -760,7 +819,7 @@ function ShowPageSkeleton() {
 }
 
 function episodeHref(showId: string, episode: ShowEpisode, translationType: TranslationType) {
-  const baseHref = withMode(`/player/${showId}/${episode.number}`, translationType)
+  const baseHref = withMode(`/player/${showId}/${episode.number}`, episode.translationType ?? translationType)
   if (episode.progress && !episode.progress.completed && episode.progress.currentTime > 0) {
     return `${baseHref}&t=${Math.floor(episode.progress.currentTime)}`
   }
@@ -1003,8 +1062,9 @@ function isLikelyRomajiTitle(value: string) {
 }
 
 function buildUpdatedLibraryEntry(current: LibraryEntry | null, input: LibraryUpdateInput): LibraryEntry {
-  const watchLater = input.watchLater ?? current?.watchLater ?? false
   const completed = input.completed ?? current?.completed ?? false
+  const dropped = input.dropped ?? (completed ? false : current?.dropped ?? false)
+  const watchLater = completed || dropped ? false : (input.watchLater ?? current?.watchLater ?? false)
 
   return {
     showId: input.showId,
@@ -1017,6 +1077,7 @@ function buildUpdatedLibraryEntry(current: LibraryEntry | null, input: LibraryUp
     favorited: input.favorited ?? current?.favorited ?? false,
     watchLater,
     completed,
+    dropped,
     completedAt: completed ? current?.completedAt ?? new Date().toISOString() : null,
   }
 }

@@ -23,6 +23,7 @@ describe('GlobalSearch', () => {
             continueWatching: [],
             watchLater: [],
             completed: [],
+            dropped: [],
             recentProgress: [],
             favorites: [],
             discover: {

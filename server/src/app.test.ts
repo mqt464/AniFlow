@@ -305,9 +305,11 @@ beforeEach(() => {
     }
 
     if (url.startsWith('https://api.allanime.day/api')) {
-      const parsed = new URL(url)
-      const query = parsed.searchParams.get('query') ?? ''
-      const variables = JSON.parse(parsed.searchParams.get('variables') ?? '{}') as { showId?: string }
+      const bodyText =
+        typeof init?.body === 'string' ? init.body : input instanceof Request ? await input.text() : null
+      const body = bodyText ? (JSON.parse(bodyText) as { query?: string; variables?: { showId?: string } }) : {}
+      const query = body.query ?? ''
+      const variables = body.variables ?? {}
 
       if (query.includes('availableEpisodesDetail')) {
         return new Response(
@@ -804,6 +806,53 @@ describe('app api', () => {
     }
   })
 
+  it('keeps sub-only episodes on the show page when browsing in dub mode', async () => {
+    const app = buildApp(createEnv())
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/shows/demo-show/page?translationType=dub',
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toMatchObject({
+      translationType: 'dub',
+    })
+    expect(response.json().episodes.map((episode: { number: string; translationType: string }) => ({
+      number: episode.number,
+      translationType: episode.translationType,
+    }))).toEqual([
+      { number: '1', translationType: 'dub' },
+      { number: '2', translationType: 'dub' },
+      { number: '3', translationType: 'sub' },
+    ])
+
+    await app.close()
+  })
+
+  it('returns a provider playback error instead of a generic 500 when no playable source is available', async () => {
+    vi.spyOn(AllAnimeAdapter.prototype, 'resolvePlayback').mockRejectedValue(
+      new Error('No playable sources were available for this episode'),
+    )
+
+    const app = buildApp(createEnv())
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/playback/resolve',
+      payload: {
+        showId: 'demo-show',
+        episodeNumber: '1',
+        translationType: 'sub',
+      },
+    })
+
+    expect(response.statusCode).toBe(502)
+    expect(response.json()).toMatchObject({
+      message: 'No playable sources were available for this episode right now.',
+    })
+
+    await app.close()
+  })
+
   it('returns a merged show page payload with progress and filler flags', async () => {
     const app = buildApp(createEnv())
 
@@ -983,11 +1032,11 @@ describe('app api', () => {
     expect(response.statusCode).toBe(200)
     expect(response.json()).toMatchObject({
       fillerSource: 'jikan',
-      fillerMatchTitle: 'Demo Show',
+      fillerMatchTitle: 'Sousou no Frieren',
     })
     expect(response.json().episodes[0]).toMatchObject({
       number: '1',
-      title: 'Episode 1',
+      title: 'Arrival',
       annotation: {
         isFiller: false,
         isRecap: false,

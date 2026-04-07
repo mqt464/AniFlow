@@ -19,6 +19,7 @@ describe('App shell', () => {
             continueWatching: [],
             watchLater: [],
             completed: [],
+            dropped: [],
             recentProgress: [],
             favorites: [],
             discover: {
@@ -107,6 +108,7 @@ describe('App shell', () => {
             continueWatching: [],
             watchLater: [],
             completed: [],
+            dropped: [],
             recentProgress: [],
             favorites: [],
             discover: {

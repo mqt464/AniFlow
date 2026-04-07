@@ -1321,6 +1321,13 @@ input::placeholder {
   pointer-events: none;
 }
 
+.poster-card-badges-start,
+.poster-card-badges-end {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .poster-card-badges-end {
   justify-content: flex-end;
 }
