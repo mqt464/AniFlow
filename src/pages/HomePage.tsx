@@ -857,7 +857,7 @@ function FeaturedCarouselSkeleton() {
 }
 
 function RailCardContent({ item }: { item: RailItem }) {
-  const hasStateBadges = Boolean(item.libraryEntry?.favorited || item.libraryEntry?.dropped || item.hasNewEpisode)
+  const hasStateBadges = Boolean(item.libraryEntry?.favorited || item.libraryEntry?.dropped)
 
   return (
     <>
@@ -869,9 +869,6 @@ function RailCardContent({ item }: { item: RailItem }) {
             <div className="poster-card-badges-start">
               {item.libraryEntry?.favorited ? <span className="poster-card-badge">Favorite</span> : null}
               {item.libraryEntry?.dropped ? <span className="poster-card-badge">Dropped</span> : null}
-            </div>
-            <div className="poster-card-badges-end">
-              {item.hasNewEpisode ? <span className="poster-card-badge">New ep</span> : null}
             </div>
           </div>
         ) : null}
