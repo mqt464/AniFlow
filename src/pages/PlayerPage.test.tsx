@@ -1655,6 +1655,61 @@ describe('PlayerPage', () => {
           currentTime: 1440,
           duration: 1440,
           completed: true,
+          advanceToEpisodeNumber: '2',
+        }),
+      )
+    })
+  })
+
+  it('marks the current episode completed when manually moving to the next episode early', async () => {
+    const progressRequests: Array<Record<string, unknown>> = []
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      createPlayerFetchMock({
+        progressRequests,
+      }),
+    )
+
+    const user = userEvent.setup()
+    const { container } = render(
+      <SessionContext.Provider value={sessionValue}>
+        <MemoryRouter initialEntries={['/player/demo-show/1']}>
+          <Routes>
+            <Route path="/player/:showId/:episodeNumber" element={<PlayerPage />} />
+          </Routes>
+        </MemoryRouter>
+      </SessionContext.Provider>,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByText('Episode 1 • Arrival')).toBeInTheDocument()
+    })
+
+    const video = container.querySelector('video')
+    expect(video).not.toBeNull()
+
+    Object.defineProperty(video!, 'duration', {
+      configurable: true,
+      value: 1440,
+    })
+    Object.defineProperty(video!, 'currentTime', {
+      configurable: true,
+      writable: true,
+      value: 720,
+    })
+
+    await user.click(screen.getByRole('button', { name: 'Next episode' }))
+
+    await waitFor(() => {
+      expect(progressRequests).toContainEqual(
+        expect.objectContaining({
+          body: expect.objectContaining({
+            episodeNumber: '1',
+            currentTime: 1440,
+            duration: 1440,
+            completed: true,
+            advanceToEpisodeNumber: '2',
+          }),
         }),
       )
     })

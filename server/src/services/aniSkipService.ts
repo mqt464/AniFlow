@@ -53,7 +53,8 @@ export class AniSkipService {
     fallbackDuration: number | null,
     alternateTitles: string[] = [],
   ): Promise<SkipSegment[]> {
-    const cacheKey = `aniskip:v2:${normalizeTitle(showTitle)}:${episodeNumber}`
+    const searchTitles = buildAniSkipSearchTitles(showTitle, alternateTitles)
+    const cacheKey = `aniskip:v3:${searchTitles.map((title) => normalizeTitle(title)).join('|')}:${episodeNumber}`
     const cached = this.database.getCachedJson<SkipSegment[]>(cacheKey)
     if (cached) {
       return cached

@@ -659,6 +659,89 @@ describe('app api', () => {
     await app.close()
   })
 
+  it('backfills nearly finished episodes when advancing to the next episode', async () => {
+    const app = buildApp(createEnv())
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/progress',
+      payload: {
+        showId: 'demo-show',
+        episodeNumber: '1',
+        title: 'Demo Show',
+        currentTime: 1080,
+        duration: 1440,
+        completed: false,
+      },
+    })
+
+    const advanceResponse = await app.inject({
+      method: 'POST',
+      url: '/api/progress',
+      payload: {
+        showId: 'demo-show',
+        episodeNumber: '2',
+        title: 'Demo Show',
+        currentTime: 600,
+        duration: 1440,
+        completed: false,
+        advanceToEpisodeNumber: '3',
+      },
+    })
+
+    expect(advanceResponse.statusCode).toBe(200)
+    expect(advanceResponse.json()).toMatchObject({
+      progress: {
+        episodeNumber: '2',
+        currentTime: 1440,
+        duration: 1440,
+        completed: true,
+      },
+    })
+
+    const showPage = await app.inject({
+      method: 'GET',
+      url: '/api/shows/demo-show/page?translationType=sub',
+    })
+
+    expect(showPage.statusCode).toBe(200)
+    expect(showPage.json()).toMatchObject({
+      progress: {
+        completedEpisodeCount: 2,
+        startedEpisodeCount: 2,
+        currentEpisodeNumber: '3',
+        currentTime: 0,
+        latestEpisodeNumber: '3',
+      },
+    })
+    expect(showPage.json().episodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          number: '1',
+          progress: expect.objectContaining({
+            currentTime: 1440,
+            duration: 1440,
+            completed: true,
+          }),
+        }),
+        expect.objectContaining({
+          number: '2',
+          progress: expect.objectContaining({
+            currentTime: 1440,
+            duration: 1440,
+            completed: true,
+          }),
+        }),
+        expect.objectContaining({
+          number: '3',
+          isCurrent: true,
+        }),
+      ]),
+    )
+
+    await app.close()
+  })
+
   it('falls back to subtitle-derived intro and outro markers when AniSkip has no match', async () => {
     vi.spyOn(AllAnimeAdapter.prototype, 'resolvePlayback').mockResolvedValue({
       url: 'https://media.example/video.m3u8',
@@ -708,6 +791,67 @@ describe('app api', () => {
         { label: 'Skip outro', startTime: 1303, endTime: 1335 },
       ],
     })
+
+    await app.close()
+  })
+
+  it('passes romaji titles to AniSkip during playback resolution', async () => {
+    vi.spyOn(AllAnimeAdapter.prototype, 'getShow').mockResolvedValue({
+      id: 'demo-show',
+      provider: 'allanime',
+      title: 'Frieren: Beyond Journey’s End',
+      romajiTitle: 'Sousou no Frieren',
+      originalTitle: '葬送のフリーレン',
+      bannerUrl: null,
+      posterUrl: 'https://example.com/poster.jpg',
+      description: null,
+      genres: [],
+      status: null,
+      year: 2024,
+      season: 'SPRING',
+      score: null,
+      availableEpisodes: {
+        sub: 1,
+        dub: 1,
+      },
+    })
+    vi.spyOn(AllAnimeAdapter.prototype, 'getEpisodes').mockResolvedValue([
+      {
+        showId: 'demo-show',
+        number: '1',
+        title: 'Episode 1',
+        translationType: 'sub',
+        durationSeconds: null,
+      },
+    ])
+    vi.spyOn(AllAnimeAdapter.prototype, 'resolvePlayback').mockResolvedValue({
+      url: 'https://media.example/video.m3u8',
+      mimeType: 'application/vnd.apple.mpegurl',
+      headers: { Referer: 'https://allmanga.to' },
+      subtitleUrl: null,
+      subtitleMimeType: null,
+      qualityLabel: 'Auto',
+    })
+    const aniSkipSpy = vi.spyOn(AniSkipService.prototype, 'getSegments').mockResolvedValue([])
+
+    const app = buildApp(createEnv())
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/playback/resolve',
+      payload: {
+        showId: 'demo-show',
+        episodeNumber: '1',
+        translationType: 'sub',
+      },
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(aniSkipSpy).toHaveBeenCalledWith(
+      'Frieren: Beyond Journey’s End',
+      '1',
+      null,
+      ['Sousou no Frieren', '葬送のフリーレン'],
+    )
 
     await app.close()
   })

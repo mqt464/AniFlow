@@ -79,7 +79,7 @@ export function PlayerPage() {
   const lastLocalProgressSecondRef = useRef(-1)
   const lastVolumeRef = useRef(1)
   const persistProgressSnapshotRef = useRef<
-    (completed: boolean, options?: { keepalive?: boolean }) => void
+    (completed: boolean, options?: { keepalive?: boolean; advanceToEpisodeNumber?: string | null }) => void
   >(() => undefined)
   const recoverPlaybackStateRef = useRef<(shouldResumePlayback: boolean) => void>(() => undefined)
   const [stream, setStream] = useState<ResolvedStream | null>(null)
@@ -162,14 +162,17 @@ export function PlayerPage() {
     setPlaybackRefreshToken((value) => value + 1)
   }
 
-  const buildProgressSnapshot = (completed: boolean) => {
+  const buildProgressSnapshot = (completed: boolean, advanceToEpisodeNumber?: string | null) => {
     const video = videoRef.current
     if (!video || !stream) {
       return null
     }
 
     const safeDuration = Number.isFinite(video.duration) ? video.duration : duration
-    const shouldMarkCompleted = completed || shouldTreatEpisodeAsCompleted(video.currentTime, safeDuration)
+    const isAdvancingToLaterEpisode =
+      parseEpisodeValue(advanceToEpisodeNumber) > parseEpisodeValue(episodeNumber)
+    const shouldMarkCompleted =
+      completed || isAdvancingToLaterEpisode || shouldTreatEpisodeAsCompleted(video.currentTime, safeDuration)
     return {
       showId,
       episodeNumber,
@@ -178,11 +181,15 @@ export function PlayerPage() {
       currentTime: shouldMarkCompleted ? safeDuration : video.currentTime,
       duration: safeDuration,
       completed: shouldMarkCompleted,
+      advanceToEpisodeNumber: isAdvancingToLaterEpisode ? advanceToEpisodeNumber : undefined,
     }
   }
 
-  const persistProgressSnapshot = (completed: boolean, options: { keepalive?: boolean } = {}) => {
-    const snapshot = buildProgressSnapshot(completed)
+  const persistProgressSnapshot = (
+    completed: boolean,
+    options: { keepalive?: boolean; advanceToEpisodeNumber?: string | null } = {},
+  ) => {
+    const snapshot = buildProgressSnapshot(completed, options.advanceToEpisodeNumber)
     if (!snapshot) {
       return
     }
@@ -1018,14 +1025,21 @@ export function PlayerPage() {
     navigate(`/player/${showId}/${episodeNumber}?mode=${nextMode}${timeToken > 0 ? `&t=${timeToken}` : ''}`)
   }
 
+  const navigateToEpisode = (nextEpisodeNumber: string) => {
+    const isAdvancingToLaterEpisode = parseEpisodeValue(nextEpisodeNumber) > parseEpisodeValue(episodeNumber)
+    persistProgressSnapshot(false, {
+      advanceToEpisodeNumber: isAdvancingToLaterEpisode ? nextEpisodeNumber : null,
+    })
+    setEpisodePickerOpen(false)
+    navigate(`/player/${showId}/${nextEpisodeNumber}?mode=${translationType}`)
+  }
+
   const goToNextEpisode = () => {
     if (!stream?.nextEpisodeNumber) {
       return
     }
 
-    persistProgressSnapshot(false)
-    setEpisodePickerOpen(false)
-    navigate(`/player/${showId}/${stream.nextEpisodeNumber}?mode=${translationType}`)
+    navigateToEpisode(stream.nextEpisodeNumber)
   }
 
   const goToEpisode = (nextEpisodeNumber: string) => {
@@ -1034,9 +1048,7 @@ export function PlayerPage() {
       return
     }
 
-    persistProgressSnapshot(false)
-    setEpisodePickerOpen(false)
-    navigate(`/player/${showId}/${nextEpisodeNumber}?mode=${translationType}`)
+    navigateToEpisode(nextEpisodeNumber)
   }
 
   const toggleFullscreen = async () => {
@@ -1977,6 +1989,15 @@ function shouldTreatEpisodeAsCompleted(currentTime: number, duration: number): b
   }
 
   return currentTime / duration >= EPISODE_COMPLETION_THRESHOLD
+}
+
+function parseEpisodeValue(value: string | null | undefined): number {
+  if (!value) {
+    return -1
+  }
+
+  const parsed = Number.parseFloat(value)
+  return Number.isFinite(parsed) ? parsed : -1
 }
 
 function PlayGlyph() {

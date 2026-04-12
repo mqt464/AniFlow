@@ -41,6 +41,7 @@ const progressSchema = z.object({
   currentTime: z.number().min(0),
   duration: z.number().min(0),
   completed: z.boolean(),
+  advanceToEpisodeNumber: z.string().min(1).nullable().optional(),
 })
 
 const playbackSchema = z.object({
@@ -454,7 +455,7 @@ async function resolvePlaybackSkipSegments(input: {
   localSkip: LocalSkipService
   provider: AllAnimeAdapter
   input: PlaybackResolveInput
-  show: { title: string; originalTitle: string | null }
+  show: { title: string; originalTitle: string | null; romajiTitle?: string | null }
   candidate: {
     url: string
     headers: Record<string, string>
@@ -468,7 +469,7 @@ async function resolvePlaybackSkipSegments(input: {
     input.show.title,
     input.input.episodeNumber,
     null,
-    input.show.originalTitle ? [input.show.originalTitle] : [],
+    [input.show.romajiTitle, input.show.originalTitle].filter((title): title is string => Boolean(title?.trim())),
   )
   const localFallbackNeeded =
     !hasSkipSegment(aniSkipSegments, 'Skip intro') || !hasSkipSegment(aniSkipSegments, 'Skip outro')

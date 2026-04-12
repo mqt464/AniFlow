@@ -300,6 +300,7 @@ export interface ProgressInput {
   currentTime: number
   duration: number
   completed: boolean
+  advanceToEpisodeNumber?: string | null
 }
 
 export interface AniListConnectInput {

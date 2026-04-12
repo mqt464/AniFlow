@@ -21,6 +21,7 @@ interface QueueJob {
 }
 
 const ANILIST_QUEUE_MAX_ATTEMPTS = 3
+const ADVANCE_BACKFILL_COMPLETION_THRESHOLD = 0.7
 
 interface WatchProgressRow {
   show_id: string
@@ -176,6 +177,17 @@ export class AniFlowDatabase {
 
   saveProgress(input: ProgressInput): WatchProgress {
     const updatedAt = nowIso()
+    const advanceToEpisodeNumber =
+      parseEpisodeNumber(input.advanceToEpisodeNumber) > parseEpisodeNumber(input.episodeNumber)
+        ? input.advanceToEpisodeNumber ?? null
+        : null
+    const shouldCompleteCurrentEpisode = input.completed || Boolean(advanceToEpisodeNumber)
+    const currentTime = shouldCompleteCurrentEpisode && input.duration > 0 ? input.duration : input.currentTime
+    const effectiveInput = {
+      ...input,
+      currentTime,
+      completed: shouldCompleteCurrentEpisode,
+    }
     this.connection
       .prepare(`
         INSERT INTO watch_progress (
@@ -190,19 +202,29 @@ export class AniFlowDatabase {
           updated_at = excluded.updated_at
       `)
       .run(
-        input.showId,
-        input.episodeNumber,
-        input.title,
-        input.posterUrl ?? null,
-        input.currentTime,
-        input.duration,
-        input.completed ? 1 : 0,
+        effectiveInput.showId,
+        effectiveInput.episodeNumber,
+        effectiveInput.title,
+        effectiveInput.posterUrl ?? null,
+        effectiveInput.currentTime,
+        effectiveInput.duration,
+        effectiveInput.completed ? 1 : 0,
         updatedAt,
       )
 
+    if (advanceToEpisodeNumber) {
+      this.completeBacklogEpisodes(input.showId, advanceToEpisodeNumber, updatedAt)
+    }
+
     const existingEntry = this.getLibraryEntryRow(input.showId)
-    const posterUrl = input.posterUrl ?? existingEntry?.poster_url ?? null
-    const shouldResetShowCompletion = !input.completed && existingEntry?.completed === 1
+    const posterUrl = effectiveInput.posterUrl ?? existingEntry?.poster_url ?? null
+    const shouldResetShowCompletion = !effectiveInput.completed && existingEntry?.completed === 1
+    const latestEpisodeNumber = getLaterEpisodeNumber(
+      existingEntry?.latest_episode_number ?? null,
+      advanceToEpisodeNumber ?? effectiveInput.episodeNumber,
+    )
+    const resumeEpisodeNumber = advanceToEpisodeNumber ?? (effectiveInput.completed ? null : effectiveInput.episodeNumber)
+    const resumeTime = advanceToEpisodeNumber ? 0 : effectiveInput.completed ? 0 : effectiveInput.currentTime
 
     this.connection
       .prepare(`
@@ -233,12 +255,12 @@ export class AniFlowDatabase {
           completed_at = excluded.completed_at
       `)
       .run(
-        input.showId,
-        input.title,
+        effectiveInput.showId,
+        effectiveInput.title,
         posterUrl,
-        input.episodeNumber,
-        input.completed ? null : input.episodeNumber,
-        input.completed ? 0 : input.currentTime,
+        latestEpisodeNumber,
+        resumeEpisodeNumber,
+        resumeTime,
         updatedAt,
         existingEntry?.favorited ?? 0,
         0,
@@ -248,13 +270,13 @@ export class AniFlowDatabase {
       )
 
     return {
-      showId: input.showId,
-      episodeNumber: input.episodeNumber,
-      title: input.title,
-      posterUrl: input.posterUrl ?? null,
-      currentTime: input.currentTime,
-      duration: input.duration,
-      completed: input.completed,
+      showId: effectiveInput.showId,
+      episodeNumber: effectiveInput.episodeNumber,
+      title: effectiveInput.title,
+      posterUrl: effectiveInput.posterUrl ?? null,
+      currentTime: effectiveInput.currentTime,
+      duration: effectiveInput.duration,
+      completed: effectiveInput.completed,
       updatedAt,
     }
   }
@@ -437,6 +459,46 @@ export class AniFlowDatabase {
         WHERE show_id = ?
       `)
       .get(showId) as LibraryEntryRow | undefined
+  }
+
+  private completeBacklogEpisodes(showId: string, advanceToEpisodeNumber: string, updatedAt: string): void {
+    const targetEpisodeNumber = parseEpisodeNumber(advanceToEpisodeNumber)
+    if (targetEpisodeNumber < 0) {
+      return
+    }
+
+    const rows = this.connection
+      .prepare(`
+        SELECT show_id, episode_number, title, poster_url, watch_progress.current_time AS progress_current_time, duration, completed, updated_at
+        FROM watch_progress
+        WHERE show_id = ?
+          AND completed = 0
+      `)
+      .all(showId) as unknown as WatchProgressRow[]
+
+    const markCompleted = this.connection.prepare(`
+      UPDATE watch_progress
+      SET current_time = ?,
+          completed = 1,
+          updated_at = ?
+      WHERE show_id = ?
+        AND episode_number = ?
+    `)
+
+    for (const row of rows) {
+      const episodeNumber = parseEpisodeNumber(row.episode_number)
+      if (episodeNumber < 0 || episodeNumber >= targetEpisodeNumber) {
+        continue
+      }
+
+      const progressRatio =
+        row.duration > 0 && Number.isFinite(row.progress_current_time) ? row.progress_current_time / row.duration : 0
+      if (progressRatio < ADVANCE_BACKFILL_COMPLETION_THRESHOLD) {
+        continue
+      }
+
+      markCompleted.run(row.duration > 0 ? row.duration : row.progress_current_time, updatedAt, showId, row.episode_number)
+    }
   }
 
   updateLibraryEntry(input: LibraryUpdateInput): LibraryEntry {
@@ -1030,4 +1092,16 @@ function parseEpisodeNumber(value: string | null | undefined): number {
 
   const parsed = Number.parseFloat(value)
   return Number.isFinite(parsed) ? parsed : -1
+}
+
+function getLaterEpisodeNumber(left: string | null, right: string | null): string | null {
+  if (!left) {
+    return right
+  }
+
+  if (!right) {
+    return left
+  }
+
+  return parseEpisodeNumber(left) >= parseEpisodeNumber(right) ? left : right
 }
