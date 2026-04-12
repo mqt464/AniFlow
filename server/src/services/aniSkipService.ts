@@ -27,6 +27,16 @@ interface AniSkipTimestamp {
   type: { name: string }
 }
 
+interface AniSkipShowCandidate {
+  id: string
+  score: number
+}
+
+interface RankedAniSkipEpisode {
+  episode: AniSkipEpisode
+  score: number
+}
+
 interface AniSkipTimestampsResponse {
   data?: {
     findTimestampsByEpisodeId?: AniSkipTimestamp[]
@@ -54,39 +64,43 @@ export class AniSkipService {
     alternateTitles: string[] = [],
   ): Promise<SkipSegment[]> {
     const searchTitles = buildAniSkipSearchTitles(showTitle, alternateTitles)
-    const cacheKey = `aniskip:v3:${searchTitles.map((title) => normalizeTitle(title)).join('|')}:${episodeNumber}`
+    const cacheKey = `aniskip:v4:${searchTitles.map((title) => normalizeTitle(title)).join('|')}:${episodeNumber}`
     const cached = this.database.getCachedJson<SkipSegment[]>(cacheKey)
     if (cached) {
       return cached
     }
 
     try {
-      const showIds = await this.findShowIds(showTitle, alternateTitles)
+      const showCandidates = await this.findShowCandidates(showTitle, alternateTitles)
       let bestSegments: SkipSegment[] = []
-      let bestScore = -1
+      let bestHasSegments = false
+      let bestMetadataScore = -1
+      let bestSegmentScore = -1
 
-      for (const showId of showIds) {
-        const episodes = await this.getEpisodes(showId)
+      for (const showCandidate of showCandidates) {
+        const episodes = await this.getEpisodes(showCandidate.id)
         const matches = this.rankEpisodeCandidates(episodes, episodeNumber)
 
-        for (const episode of matches.slice(0, 6)) {
-          const timestamps = await this.getTimestamps(episode.id)
-          const totalDuration = fallbackDuration ?? episode.baseDuration ?? 0
+        for (const match of matches.slice(0, 6)) {
+          const timestamps = await this.getTimestamps(match.episode.id)
+          const totalDuration = fallbackDuration ?? match.episode.baseDuration ?? 0
           const segments = this.buildSegments(timestamps, totalDuration)
-          const score = this.scoreSegments(segments, totalDuration)
+          const segmentScore = this.scoreSegments(segments, totalDuration)
+          const hasSegments = segmentScore > 0
+          const metadataScore = showCandidate.score + match.score * 25
 
-          if (score > bestScore) {
+          if (
+            (hasSegments && !bestHasSegments) ||
+            (hasSegments === bestHasSegments && metadataScore > bestMetadataScore) ||
+            (hasSegments === bestHasSegments &&
+              metadataScore === bestMetadataScore &&
+              segmentScore > bestSegmentScore)
+          ) {
             bestSegments = segments
-            bestScore = score
+            bestHasSegments = hasSegments
+            bestMetadataScore = metadataScore
+            bestSegmentScore = segmentScore
           }
-
-          if (score >= 10) {
-            break
-          }
-        }
-
-        if (bestScore >= 10) {
-          break
         }
       }
 
@@ -97,7 +111,7 @@ export class AniSkipService {
     }
   }
 
-  private async findShowIds(showTitle: string, alternateTitles: string[]): Promise<string[]> {
+  private async findShowCandidates(showTitle: string, alternateTitles: string[]): Promise<AniSkipShowCandidate[]> {
     const searchTitles = buildAniSkipSearchTitles(showTitle, alternateTitles)
     const candidateScores = new Map<string, number>()
 
@@ -126,7 +140,7 @@ export class AniSkipService {
     return [...candidateScores.entries()]
       .filter(([, score]) => score >= 24)
       .sort((left, right) => right[1] - left[1])
-      .map(([id]) => id)
+      .map(([id, score]) => ({ id, score }))
   }
 
   private async getEpisodes(showId: string): Promise<AniSkipEpisode[]> {
@@ -161,7 +175,7 @@ export class AniSkipService {
     return response.data?.findTimestampsByEpisodeId ?? []
   }
 
-  private rankEpisodeCandidates(episodes: AniSkipEpisode[], episodeNumber: string): AniSkipEpisode[] {
+  private rankEpisodeCandidates(episodes: AniSkipEpisode[], episodeNumber: string): RankedAniSkipEpisode[] {
     const normalizedEpisodeNumber = normalizeTitle(episodeNumber)
     const numericEpisodeNumber = parseNumericValue(episodeNumber)
     return episodes
@@ -193,7 +207,6 @@ export class AniSkipService {
         return { episode, score }
       })
       .sort((left, right) => right.score - left.score)
-      .map(({ episode }) => episode)
   }
 
   private mapTimestampType(name: string | null | undefined): string | null {

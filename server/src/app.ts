@@ -14,6 +14,7 @@ import type {
   PlaybackResolveInput,
   ProgressInput,
   ResolvedStream,
+  SkipDebugInfo,
   SearchPayload,
   ShowPagePayload,
   TranslationType,
@@ -32,6 +33,7 @@ import { ProxySessionStore } from './services/proxySessionStore.js'
 export const PLAYBACK_RESOLVE_TIMEOUT_MS = 12_000
 export const PLAYBACK_METADATA_TIMEOUT_MS = 5_000
 export const PLAYBACK_SKIP_TIMEOUT_MS = 4_000
+const PLAYBACK_SKIP_TIMEOUT_BUFFER_MS = 150
 
 const progressSchema = z.object({
   showId: z.string().min(1),
@@ -49,6 +51,7 @@ const playbackSchema = z.object({
   episodeNumber: z.string().min(1),
   translationType: z.enum(translationTypes).default('sub'),
   preferredQuality: z.string().nullable().optional(),
+  debugSkip: z.boolean().optional(),
 })
 
 const aniListSchema = z.object({
@@ -229,7 +232,7 @@ export function buildApp(env: AppEnv) {
         })
       : null
 
-    const skipSegments =
+    const skipResolution =
       show && episodes.length > 0
         ? await withTimeout(
             resolvePlaybackSkipSegments({
@@ -244,8 +247,14 @@ export function buildApp(env: AppEnv) {
             }),
             PLAYBACK_SKIP_TIMEOUT_MS,
             'Timed out loading playback markers',
-          ).catch(() => [])
-        : []
+          ).catch(() => ({
+            skipSegments: [],
+            skipDebug: null,
+          }))
+        : {
+            skipSegments: [],
+            skipDebug: null,
+          }
     const nextEpisodeNumber = episodes.length > 0 ? provider.getNextEpisodeNumber(episodes, input.episodeNumber) : null
     const showTitle = show?.title ?? input.showId
 
@@ -265,7 +274,8 @@ export function buildApp(env: AppEnv) {
           proxyUrl: `/api/playback/proxy/${mainSession.id}`,
         },
       ],
-      skipSegments,
+      skipSegments: skipResolution.skipSegments,
+      skipDebug: skipResolution.skipDebug,
       nextEpisodeNumber,
       title: `${showTitle} • Episode ${input.episodeNumber}`,
     }
@@ -464,38 +474,98 @@ async function resolvePlaybackSkipSegments(input: {
   }
   episodes: Array<{ number: string }>
   translationType: TranslationType
-}): Promise<ResolvedStream['skipSegments']> {
-  const aniSkipSegments = await input.aniSkip.getSegments(
-    input.show.title,
-    input.input.episodeNumber,
-    null,
-    [input.show.romajiTitle, input.show.originalTitle].filter((title): title is string => Boolean(title?.trim())),
+}): Promise<{ skipSegments: ResolvedStream['skipSegments']; skipDebug: SkipDebugInfo }> {
+  const lookupStartedAt = Date.now()
+  const lookupTitles = [input.show.title, input.show.romajiTitle, input.show.originalTitle].filter(
+    (title): title is string => Boolean(title?.trim()),
   )
-  const localFallbackNeeded =
-    !hasSkipSegment(aniSkipSegments, 'Skip intro') || !hasSkipSegment(aniSkipSegments, 'Skip outro')
+  const aniSkipSegments = await withTimeout(
+    input.aniSkip.getSegments(
+      input.show.title,
+      input.input.episodeNumber,
+      null,
+      lookupTitles.filter((title) => title !== input.show.title),
+    ),
+    PLAYBACK_SKIP_TIMEOUT_MS,
+    'Timed out loading AniSkip markers',
+  ).catch(() => [])
+  const missingAniSkipLabels = getMissingSkipSegmentLabels(aniSkipSegments)
+  const localDebugRequested = input.input.debugSkip === true
+  const localFallbackNeeded = missingAniSkipLabels.length > 0
+  const localSegments =
+    localFallbackNeeded || localDebugRequested
+      ? await (() => {
+          const remainingBudgetMs =
+            PLAYBACK_SKIP_TIMEOUT_MS - (Date.now() - lookupStartedAt) - PLAYBACK_SKIP_TIMEOUT_BUFFER_MS
+          if (remainingBudgetMs <= 0) {
+            return Promise.resolve<ResolvedStream['skipSegments']>([])
+          }
+
+          return withTimeout(
+            (async () =>
+              input.localSkip.getSegments({
+                showId: input.input.showId,
+                episodeNumber: input.input.episodeNumber,
+                translationType: input.translationType,
+                subtitleUrl: input.candidate.subtitleUrl,
+                subtitleMimeType: input.candidate.subtitleMimeType,
+                streamUrl: input.candidate.url,
+                headers: input.candidate.headers,
+                referenceStreams: await resolveReferenceStreams(
+                  input.provider,
+                  input.input.showId,
+                  input.translationType,
+                  input.episodes,
+                  input.input.episodeNumber,
+                ),
+              }))(),
+            remainingBudgetMs,
+            'Timed out loading local skip markers',
+          ).catch(() => [])
+        })()
+      : []
+
   if (!localFallbackNeeded) {
-    return aniSkipSegments
+    return {
+      skipSegments: aniSkipSegments,
+      skipDebug: {
+        source: 'aniskip',
+        lookupTitles,
+        rawAniSkipSegments: aniSkipSegments,
+        rawLocalSegments: localSegments,
+        mergedSegments: aniSkipSegments,
+        missingAniSkipLabels,
+        usedLocalFallback: false,
+      },
+    }
   }
 
-  return mergeSkipSegments(
-    aniSkipSegments,
-    await input.localSkip.getSegments({
-      showId: input.input.showId,
-      episodeNumber: input.input.episodeNumber,
-      translationType: input.translationType,
-      subtitleUrl: input.candidate.subtitleUrl,
-      subtitleMimeType: input.candidate.subtitleMimeType,
-      streamUrl: input.candidate.url,
-      headers: input.candidate.headers,
-      referenceStreams: await resolveReferenceStreams(
-        input.provider,
-        input.input.showId,
-        input.translationType,
-        input.episodes,
-        input.input.episodeNumber,
-      ),
-    }),
-  )
+  const mergedSegments = mergeSkipSegments(aniSkipSegments, localSegments)
+
+  return {
+    skipSegments: mergedSegments,
+    skipDebug: {
+      source: mergedSegments.length > 0 ? 'merged' : 'none',
+      lookupTitles,
+      rawAniSkipSegments: aniSkipSegments,
+      rawLocalSegments: localSegments,
+      mergedSegments,
+      missingAniSkipLabels,
+      usedLocalFallback: localSegments.length > 0,
+    },
+  }
+}
+
+function getMissingSkipSegmentLabels(segments: ResolvedStream['skipSegments']) {
+  const missingLabels: string[] = []
+  if (!hasSkipSegment(segments, 'Skip intro')) {
+    missingLabels.push('Skip intro')
+  }
+  if (!hasSkipSegment(segments, 'Skip outro')) {
+    missingLabels.push('Skip outro')
+  }
+
+  return missingLabels
 }
 
 async function resolveReferenceStreams(

@@ -237,6 +237,77 @@ describe('AniSkipService', () => {
     ])
   })
 
+  it('prefers the strongest show and episode metadata match once candidates have usable markers', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      const body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as {
+        query?: string
+        variables?: Record<string, string>
+      }
+
+      if (body.query?.includes('searchShows')) {
+        return jsonResponse({
+          data: {
+            searchShows: [
+              { id: 'season-2', name: "Hell's Paradise Season 2", originalName: null },
+              { id: 'season-1', name: "Hell's Paradise", originalName: null },
+            ],
+          },
+        })
+      }
+
+      if (body.variables?.showId === 'season-2') {
+        return jsonResponse({
+          data: {
+            findEpisodesByShowId: [{ id: 'season-2-episode-1', number: '1', name: '1', baseDuration: 1465 }],
+          },
+        })
+      }
+
+      if (body.variables?.showId === 'season-1') {
+        return jsonResponse({
+          data: {
+            findEpisodesByShowId: [{ id: 'season-1-episode-1', number: '1', name: '1', baseDuration: 1465 }],
+          },
+        })
+      }
+
+      if (body.variables?.episodeId === 'season-2-episode-1') {
+        return jsonResponse({
+          data: {
+            findTimestampsByEpisodeId: [
+              { at: 170, type: { name: 'Intro' } },
+              { at: 191, type: { name: 'Canon' } },
+            ],
+          },
+        })
+      }
+
+      if (body.variables?.episodeId === 'season-1-episode-1') {
+        return jsonResponse({
+          data: {
+            findTimestampsByEpisodeId: [
+              { at: 101, type: { name: 'Intro' } },
+              { at: 191, type: { name: 'Canon' } },
+              { at: 1375, type: { name: 'Credits' } },
+              { at: 1465, type: { name: 'Preview' } },
+            ],
+          },
+        })
+      }
+
+      throw new Error(`Unexpected AniSkip query: ${body.query}`)
+    })
+
+    const service = new AniSkipService(
+      { aniSkipClientId: 'test-client' } as never,
+      createDatabaseStub() as never,
+    )
+
+    await expect(service.getSegments("Hell's Paradise Season 2", '1', null)).resolves.toEqual([
+      { label: 'Skip intro', startTime: 170, endTime: 191 },
+    ])
+  })
+
   it('returns no segments when AniSkip responds with GraphQL errors', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
       const body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as {

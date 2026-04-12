@@ -194,6 +194,16 @@ export interface SkipSegment {
   endTime: number
 }
 
+export interface SkipDebugInfo {
+  source: 'aniskip' | 'merged' | 'none'
+  lookupTitles: string[]
+  rawAniSkipSegments: SkipSegment[]
+  rawLocalSegments: SkipSegment[]
+  mergedSegments: SkipSegment[]
+  missingAniSkipLabels: string[]
+  usedLocalFallback: boolean
+}
+
 export interface StreamVariant {
   id: string
   label: string
@@ -211,6 +221,7 @@ export interface ResolvedStream {
   subtitleMimeType: string | null
   qualities: StreamVariant[]
   skipSegments: SkipSegment[]
+  skipDebug: SkipDebugInfo | null
   nextEpisodeNumber: string | null
   title: string
 }
@@ -290,6 +301,7 @@ export interface PlaybackResolveInput {
   episodeNumber: string
   translationType?: TranslationType
   preferredQuality?: string | null
+  debugSkip?: boolean
 }
 
 export interface ProgressInput {

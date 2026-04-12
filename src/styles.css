@@ -2920,6 +2920,80 @@ input::placeholder {
   color: #ffd4df;
 }
 
+.player-skip-debug-panel {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  z-index: 4;
+  width: min(420px, calc(100vw - 36px));
+  max-height: min(72vh, 760px);
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  background: rgba(8, 9, 12, 0.88);
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.35);
+  color: #f2f3f7;
+  backdrop-filter: blur(18px);
+}
+
+.player-skip-debug-head,
+.player-skip-debug-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.player-skip-debug-head {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.player-skip-debug-head span,
+.player-skip-debug-label {
+  color: rgba(242, 243, 247, 0.72);
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.player-skip-debug-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 12px;
+}
+
+.player-skip-debug-grid div,
+.player-skip-debug-section {
+  display: grid;
+  gap: 4px;
+}
+
+.player-skip-debug-panel code,
+.player-skip-debug-panel pre {
+  margin: 0;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.78rem;
+}
+
+.player-skip-debug-panel code {
+  color: #f8d98d;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.player-skip-debug-section + .player-skip-debug-section {
+  margin-top: 10px;
+}
+
+.player-skip-debug-panel pre {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #d8dbe5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .player-overlay {
   position: absolute;
   left: 0;

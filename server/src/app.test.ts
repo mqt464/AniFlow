@@ -10,6 +10,7 @@ import { buildApp, PLAYBACK_SKIP_TIMEOUT_MS } from './app.js'
 import type { AppEnv } from './env.js'
 import { AniFlowDatabase } from './lib/database.js'
 import { AniSkipService } from './services/aniSkipService.js'
+import { LocalSkipService } from './services/localSkipService.js'
 import { AllAnimeAdapter } from './services/provider/allAnimeAdapter.js'
 
 const tempDirs: string[] = []
@@ -903,8 +904,157 @@ describe('app api', () => {
       { label: 'Skip intro', startTime: 88, endTime: 179 },
       { label: 'Skip outro', startTime: 1303, endTime: 1335 },
     ])
+    expect(response.json().skipDebug).toMatchObject({
+      source: 'merged',
+      rawAniSkipSegments: [{ label: 'Skip intro', startTime: 88, endTime: 179 }],
+      rawLocalSegments: [
+        { label: 'Skip intro', startTime: 0, endTime: 92 },
+        { label: 'Skip outro', startTime: 1303, endTime: 1335 },
+      ],
+      mergedSegments: [
+        { label: 'Skip intro', startTime: 88, endTime: 179 },
+        { label: 'Skip outro', startTime: 1303, endTime: 1335 },
+      ],
+      missingAniSkipLabels: ['Skip outro'],
+      usedLocalFallback: true,
+    })
 
     await app.close()
+  })
+
+  it('includes local skip diagnostics when debug skip mode is requested even if AniSkip is complete', async () => {
+    vi.spyOn(AllAnimeAdapter.prototype, 'resolvePlayback').mockResolvedValue({
+      url: 'https://media.example/video.m3u8',
+      mimeType: 'application/vnd.apple.mpegurl',
+      headers: { Referer: 'https://allmanga.to' },
+      subtitleUrl: 'https://media.example/subtitles.vtt',
+      subtitleMimeType: 'text/vtt',
+      qualityLabel: 'Auto',
+    })
+    vi.spyOn(AniSkipService.prototype, 'getSegments').mockResolvedValue([
+      { label: 'Skip intro', startTime: 101, endTime: 191 },
+      { label: 'Skip outro', startTime: 1375, endTime: 1465 },
+    ])
+
+    const fetchMock = vi.mocked(globalThis.fetch)
+    const originalFetch = fetchMock.getMockImplementation()
+    fetchMock.mockImplementation(async (input, init) => {
+      const url = getRequestUrl(input as string | URL | Request)
+      if (url === 'https://media.example/subtitles.vtt') {
+        return new Response(subtitleFixture, {
+          status: 200,
+          headers: { 'Content-Type': 'text/vtt' },
+        })
+      }
+
+      if (!originalFetch) {
+        throw new Error(`Unexpected fetch in test: ${url}`)
+      }
+
+      return originalFetch(input, init)
+    })
+
+    const app = buildApp(createEnv())
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/playback/resolve',
+      payload: {
+        showId: 'demo-show',
+        episodeNumber: '1',
+        translationType: 'sub',
+        debugSkip: true,
+      },
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.json().skipSegments).toEqual([
+      { label: 'Skip intro', startTime: 101, endTime: 191 },
+      { label: 'Skip outro', startTime: 1375, endTime: 1465 },
+    ])
+    expect(response.json().skipDebug).toMatchObject({
+      source: 'aniskip',
+      rawAniSkipSegments: [
+        { label: 'Skip intro', startTime: 101, endTime: 191 },
+        { label: 'Skip outro', startTime: 1375, endTime: 1465 },
+      ],
+      rawLocalSegments: [
+        { label: 'Skip intro', startTime: 0, endTime: 92 },
+        { label: 'Skip outro', startTime: 1303, endTime: 1335 },
+      ],
+      mergedSegments: [
+        { label: 'Skip intro', startTime: 101, endTime: 191 },
+        { label: 'Skip outro', startTime: 1375, endTime: 1465 },
+      ],
+      missingAniSkipLabels: [],
+      usedLocalFallback: false,
+    })
+
+    await app.close()
+  })
+
+  it('keeps AniSkip markers when debug-only local diagnostics stall', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(AllAnimeAdapter.prototype, 'resolvePlayback').mockResolvedValue({
+      url: 'https://media.example/video.m3u8',
+      mimeType: 'application/vnd.apple.mpegurl',
+      headers: { Referer: 'https://allmanga.to' },
+      subtitleUrl: 'https://media.example/subtitles.vtt',
+      subtitleMimeType: 'text/vtt',
+      qualityLabel: 'Auto',
+    })
+    vi.spyOn(AniSkipService.prototype, 'getSegments').mockResolvedValue([
+      { label: 'Skip intro', startTime: 101, endTime: 191 },
+      { label: 'Skip outro', startTime: 1375, endTime: 1465 },
+    ])
+    vi.spyOn(LocalSkipService.prototype, 'getSegments').mockImplementation(
+      () => new Promise<never>(() => undefined),
+    )
+
+    const app = buildApp(createEnv())
+
+    try {
+      const responsePromise = app.inject({
+        method: 'POST',
+        url: '/api/playback/resolve',
+        payload: {
+          showId: 'demo-show',
+          episodeNumber: '1',
+          translationType: 'sub',
+          debugSkip: true,
+        },
+      })
+
+      await vi.advanceTimersByTimeAsync(PLAYBACK_SKIP_TIMEOUT_MS + 25)
+      const response = await responsePromise
+
+      expect(response.statusCode).toBe(200)
+      expect(response.json()).toMatchObject({
+        showId: 'demo-show',
+        episodeNumber: '1',
+        skipSegments: [
+          { label: 'Skip intro', startTime: 101, endTime: 191 },
+          { label: 'Skip outro', startTime: 1375, endTime: 1465 },
+        ],
+        skipDebug: {
+          source: 'aniskip',
+          rawAniSkipSegments: [
+            { label: 'Skip intro', startTime: 101, endTime: 191 },
+            { label: 'Skip outro', startTime: 1375, endTime: 1465 },
+          ],
+          rawLocalSegments: [],
+          mergedSegments: [
+            { label: 'Skip intro', startTime: 101, endTime: 191 },
+            { label: 'Skip outro', startTime: 1375, endTime: 1465 },
+          ],
+          missingAniSkipLabels: [],
+          usedLocalFallback: false,
+        },
+      })
+      expect(response.json().streamUrl).toMatch(/^\/api\/playback\/proxy\//)
+    } finally {
+      vi.useRealTimers()
+      await app.close()
+    }
   })
 
   it('does not block playback when skip marker enrichment stalls', async () => {

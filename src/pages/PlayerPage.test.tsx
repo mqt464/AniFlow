@@ -637,7 +637,7 @@ describe('PlayerPage', () => {
     expect(container.querySelector('.player-scrubber-preview')).not.toBeNull()
   })
 
-  it('rescales skip markers when the reported segment duration exceeds the media duration', async () => {
+  it('clamps overflowing outro markers without rescaling earlier skip markers', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input)
 
@@ -744,11 +744,12 @@ describe('PlayerPage', () => {
       </SessionContext.Provider>,
     )
 
-    const video = await waitFor(() => {
-      const element = container.querySelector('video')
-      expect(element).not.toBeNull()
-      return element
+    await waitFor(() => {
+      expect(container.querySelector('video')).toHaveAttribute('src', 'https://cdn.example.com/1.mp4')
     })
+
+    const video = container.querySelector('video')
+    expect(video).not.toBeNull()
 
     Object.defineProperty(video, 'duration', {
       configurable: true,
@@ -757,12 +758,23 @@ describe('PlayerPage', () => {
 
     await act(async () => {
       fireEvent(video, new Event('loadedmetadata'))
+      fireEvent(video, new Event('canplay'))
+      fireEvent(video, new Event('durationchange'))
     })
 
     await waitFor(() => {
+      expect(screen.getByLabelText('Seek timeline')).toHaveAttribute('max', '1440')
+    })
+
+    await waitFor(() => {
+      const intro = container.querySelector('.player-timeline-segment-intro') as HTMLDivElement | null
       const outro = container.querySelector('.player-timeline-segment-outro') as HTMLDivElement | null
+      expect(intro).not.toBeNull()
       expect(outro).not.toBeNull()
-      expect(outro?.style.left).not.toBe('100%')
+      expect(Number.parseFloat(intro?.style.width ?? '0')).toBeGreaterThan(6)
+      expect(Number.parseFloat(intro?.style.width ?? '0')).toBeLessThan(6.4)
+      expect(Number.parseFloat(outro?.style.left ?? '0')).toBeGreaterThan(92)
+      expect(Number.parseFloat(outro?.style.left ?? '0')).toBeLessThan(94)
     })
   })
 
@@ -907,6 +919,242 @@ describe('PlayerPage', () => {
     fireEvent.keyDown(player!, { key: 'Enter' })
 
     expect(video!.currentTime).toBe(95)
+  })
+
+  it('shows skip debug details when opened with the debug query flag', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input)
+
+      if (url === '/api/playback/resolve') {
+        const payload = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as { episodeNumber: string }
+        return jsonResponse({
+          showId: 'demo-show',
+          episodeNumber: payload.episodeNumber,
+          translationType: 'sub',
+          showTitle: 'Demo Show',
+          streamUrl: `https://cdn.example.com/${payload.episodeNumber}.mp4`,
+          mimeType: 'video/mp4',
+          subtitleUrl: null,
+          subtitleMimeType: null,
+          qualities: [
+            {
+              id: 'default',
+              label: 'Auto',
+              proxyUrl: `https://cdn.example.com/${payload.episodeNumber}.mp4`,
+            },
+          ],
+          skipSegments: [
+            { label: 'Skip intro', startTime: 30, endTime: 95 },
+            { label: 'Skip outro', startTime: 1300, endTime: 1440 },
+          ],
+          skipDebug: {
+            source: 'merged',
+            lookupTitles: ['Demo Show', 'Sousou no Frieren'],
+            rawAniSkipSegments: [{ label: 'Skip intro', startTime: 30, endTime: 95 }],
+            rawLocalSegments: [{ label: 'Skip outro', startTime: 1300, endTime: 1440 }],
+            mergedSegments: [
+              { label: 'Skip intro', startTime: 30, endTime: 95 },
+              { label: 'Skip outro', startTime: 1300, endTime: 1440 },
+            ],
+            missingAniSkipLabels: ['Skip outro'],
+            usedLocalFallback: true,
+          },
+          nextEpisodeNumber: '2',
+          title: 'Arrival',
+        })
+      }
+
+      if (url === '/api/shows/demo-show/page?translationType=sub') {
+        return jsonResponse(buildShowPagePayload(null))
+      }
+
+      if (url.startsWith('/api/shows/demo-show/episodes?translationType=')) {
+        return jsonResponse({
+          episodes: [
+            { showId: 'demo-show', number: '1', title: 'Arrival', translationType: 'sub', durationSeconds: 1440 },
+            { showId: 'demo-show', number: '2', title: 'Training Day', translationType: 'sub', durationSeconds: 1440 },
+          ],
+        })
+      }
+
+      if (url === '/api/progress') {
+        const payload = JSON.parse(typeof init?.body === 'string' ? init.body : '{}')
+        return jsonResponse({
+          progress: {
+            ...payload,
+            updatedAt: '2026-03-31T08:00:00.000Z',
+          },
+        })
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    const { container } = render(
+      <SessionContext.Provider value={sessionValue}>
+        <MemoryRouter initialEntries={['/player/demo-show/1?debug=skip']}>
+          <Routes>
+            <Route path="/player/:showId/:episodeNumber" element={<PlayerPage />} />
+          </Routes>
+        </MemoryRouter>
+      </SessionContext.Provider>,
+    )
+
+    const video = await waitFor(() => {
+      const element = container.querySelector('video')
+      expect(element).not.toBeNull()
+      return element
+    })
+
+    Object.defineProperty(video, 'duration', {
+      configurable: true,
+      value: 1440,
+    })
+
+    await act(async () => {
+      fireEvent(video, new Event('loadedmetadata'))
+      fireEvent(video, new Event('canplay'))
+      fireEvent(video, new Event('durationchange'))
+    })
+
+    await waitFor(() => {
+      const debugPanel = screen.getByLabelText('Skip debug')
+      expect(debugPanel).toBeInTheDocument()
+      expect(debugPanel).toHaveTextContent(/Demo Show \| Sousou no Frieren/i)
+      expect(debugPanel).toHaveTextContent(/Skip intro: 30.00-95.00/i)
+      expect(debugPanel).toHaveTextContent(/Skip outro: 1300.00-1440.00/i)
+      expect(debugPanel).toHaveTextContent(/used/i)
+    })
+  })
+
+  it('toggles skip debug from the player settings menu', async () => {
+    const playbackPayloads: Array<{ episodeNumber: string; debugSkip?: boolean }> = []
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof Request ? input.url : String(input)
+
+      if (url === '/api/playback/resolve') {
+        const payload = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as {
+          episodeNumber: string
+          debugSkip?: boolean
+        }
+        playbackPayloads.push(payload)
+        return jsonResponse({
+          showId: 'demo-show',
+          episodeNumber: payload.episodeNumber,
+          translationType: 'sub',
+          showTitle: 'Demo Show',
+          streamUrl: `https://cdn.example.com/${payload.episodeNumber}.mp4`,
+          mimeType: 'video/mp4',
+          subtitleUrl: null,
+          subtitleMimeType: null,
+          qualities: [
+            {
+              id: 'default',
+              label: 'Auto',
+              proxyUrl: `https://cdn.example.com/${payload.episodeNumber}.mp4`,
+            },
+          ],
+          skipSegments: [
+            { label: 'Skip intro', startTime: 30, endTime: 95 },
+            { label: 'Skip outro', startTime: 1300, endTime: 1440 },
+          ],
+          skipDebug: {
+            source: 'merged',
+            lookupTitles: ['Demo Show', 'Sousou no Frieren'],
+            rawAniSkipSegments: [{ label: 'Skip intro', startTime: 30, endTime: 95 }],
+            rawLocalSegments: [{ label: 'Skip outro', startTime: 1300, endTime: 1440 }],
+            mergedSegments: [
+              { label: 'Skip intro', startTime: 30, endTime: 95 },
+              { label: 'Skip outro', startTime: 1300, endTime: 1440 },
+            ],
+            missingAniSkipLabels: ['Skip outro'],
+            usedLocalFallback: true,
+          },
+          nextEpisodeNumber: '2',
+          title: 'Arrival',
+        })
+      }
+
+      if (url === '/api/shows/demo-show/page?translationType=sub') {
+        return jsonResponse(buildShowPagePayload(null))
+      }
+
+      if (url.startsWith('/api/shows/demo-show/episodes?translationType=')) {
+        return jsonResponse({
+          episodes: [
+            { showId: 'demo-show', number: '1', title: 'Arrival', translationType: 'sub', durationSeconds: 1440 },
+            { showId: 'demo-show', number: '2', title: 'Training Day', translationType: 'sub', durationSeconds: 1440 },
+          ],
+        })
+      }
+
+      if (url === '/api/progress') {
+        const payload = JSON.parse(typeof init?.body === 'string' ? init.body : '{}')
+        return jsonResponse({
+          progress: {
+            ...payload,
+            updatedAt: '2026-03-31T08:00:00.000Z',
+          },
+        })
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`)
+    })
+
+    const user = userEvent.setup()
+    const { container } = render(
+      <SessionContext.Provider value={sessionValue}>
+        <MemoryRouter initialEntries={['/player/demo-show/1']}>
+          <Routes>
+            <Route path="/player/:showId/:episodeNumber" element={<PlayerPage />} />
+          </Routes>
+        </MemoryRouter>
+      </SessionContext.Provider>,
+    )
+
+    const video = await waitFor(() => {
+      const element = container.querySelector('video')
+      expect(element).not.toBeNull()
+      return element
+    })
+
+    Object.defineProperty(video, 'duration', {
+      configurable: true,
+      value: 1440,
+    })
+
+    await act(async () => {
+      fireEvent(video, new Event('loadedmetadata'))
+      fireEvent(video, new Event('canplay'))
+      fireEvent(video, new Event('durationchange'))
+    })
+
+    Object.defineProperty(video, 'currentTime', {
+      configurable: true,
+      writable: true,
+      value: 321,
+    })
+
+    await act(async () => {
+      fireEvent(video, new Event('timeupdate'))
+    })
+
+    expect(screen.queryByLabelText('Skip debug')).not.toBeInTheDocument()
+    expect(playbackPayloads[0]).toMatchObject({ episodeNumber: '1' })
+    expect(playbackPayloads[0]?.debugSkip).not.toBe(true)
+
+    await user.click(screen.getByRole('button', { name: /playback settings/i }))
+    await user.click(screen.getByRole('button', { name: /skip debug/i }))
+
+    await waitFor(() => {
+      expect(playbackPayloads.some((payload) => payload.debugSkip === true)).toBe(true)
+      expect(screen.getByLabelText('Skip debug')).toBeInTheDocument()
+    })
+
+    expect(video.currentTime).toBe(321)
+    expect(screen.queryByText(/playback unavailable/i)).not.toBeInTheDocument()
+    expect(window.localStorage.getItem('aniflow:skip-debug')).toBe('true')
   })
 
   it('hides the manual skip prompt after ten seconds even if the segment is longer', async () => {

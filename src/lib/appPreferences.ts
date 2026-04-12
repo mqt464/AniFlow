@@ -5,6 +5,7 @@ const PREFERRED_TRANSLATION_STORAGE_KEY = 'aniflow:preferred-translation'
 const ANILIST_TOKEN_STORAGE_KEY = 'aniflow:anilist-token'
 const AUTO_NEXT_STORAGE_KEY = 'aniflow:auto-next'
 const AUTO_SKIP_SEGMENTS_STORAGE_KEY = 'aniflow:auto-skip-segments'
+const SKIP_DEBUG_STORAGE_KEY = 'aniflow:skip-debug'
 
 export function readStoredPassword(): string {
   return window.localStorage.getItem(PASSWORD_STORAGE_KEY) ?? ''
@@ -46,6 +47,15 @@ export function readStoredAutoSkipSegments(): boolean {
 
 export function writeStoredAutoSkipSegments(value: boolean): void {
   window.localStorage.setItem(AUTO_SKIP_SEGMENTS_STORAGE_KEY, String(value))
+}
+
+export function readStoredSkipDebugPreference(): boolean | null {
+  const value = window.localStorage.getItem(SKIP_DEBUG_STORAGE_KEY)
+  return value === null ? null : value === 'true'
+}
+
+export function writeStoredSkipDebugPreference(value: boolean): void {
+  window.localStorage.setItem(SKIP_DEBUG_STORAGE_KEY, String(value))
 }
 
 export function isTranslationType(value: string | null | undefined): value is TranslationType {

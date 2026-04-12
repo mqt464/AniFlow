@@ -1,5 +1,6 @@
 import {
   ArrowLeft,
+  Bug,
   Captions,
   FastForward,
   List,
@@ -30,7 +31,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { translationTypes, type ResolvedStream, type ShowPagePayload, type TranslationType } from '../../shared/contracts'
 import { PosterImage } from '../components/PosterImage'
 import { ApiError, createApi } from '../lib/api'
-import { resolveTranslationType, withMode } from '../lib/appPreferences'
+import { readStoredSkipDebugPreference, resolveTranslationType, withMode, writeStoredSkipDebugPreference } from '../lib/appPreferences'
 import { useSession } from '../session'
 
 const CONTROL_IDLE_MS = 2200
@@ -120,6 +121,10 @@ export function PlayerPage() {
     dub: true,
   })
   const translationType = resolveTranslationType(searchParams.get('mode'), preferredTranslationType)
+  const [skipDebugEnabled, setSkipDebugEnabled] = useState(() => {
+    const storedPreference = readStoredSkipDebugPreference()
+    return storedPreference ?? searchParams.get('debug') === 'skip'
+  })
   const [playbackRefreshToken, setPlaybackRefreshToken] = useState(0)
   const episodes = showPage?.episodes ?? []
   const currentEpisodeDetails = episodes.find((episode) => episode.number === episodeNumber) ?? null
@@ -127,6 +132,18 @@ export function PlayerPage() {
   const initialLocalResumeSnapshot = useMemo(() => readPlayerProgressSnapshot(showId, episodeNumber), [episodeNumber, showId])
   const resumeAt = selectResumeTime(explicitResumeAt, initialLocalResumeSnapshot, currentEpisodeDetails?.progress ?? null)
   const activeQuality = stream?.qualities.find((quality) => quality.id === selectedQualityId) ?? stream?.qualities[0] ?? null
+  const streamQualityKey = stream?.qualities.map((quality) => `${quality.id}:${quality.proxyUrl}`).join('|') ?? ''
+  const streamConfigurationKey = stream
+    ? [
+        stream.showId,
+        stream.episodeNumber,
+        stream.translationType,
+        stream.streamUrl,
+        stream.mimeType,
+        stream.subtitleUrl ?? '',
+        streamQualityKey,
+      ].join('|')
+    : null
   const progressPercent = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0
   const bufferedPercent = duration > 0 ? Math.min(100, (bufferedEnd / duration) * 100) : 0
   const displayedVolume = isMuted ? 0 : volume
@@ -145,6 +162,31 @@ export function PlayerPage() {
     () => normalizeSkipSegmentsForDuration(stream?.skipSegments ?? [], duration),
     [duration, stream?.skipSegments],
   )
+  const normalizedSkipDebug = useMemo(() => {
+    if (!stream?.skipDebug) {
+      return null
+    }
+
+    return {
+      rawAniSkipSegments: normalizeSkipSegmentsForDuration(stream.skipDebug.rawAniSkipSegments, duration),
+      rawLocalSegments: normalizeSkipSegmentsForDuration(stream.skipDebug.rawLocalSegments, duration),
+      mergedSegments: normalizeSkipSegmentsForDuration(stream.skipDebug.mergedSegments, duration),
+    }
+  }, [duration, stream?.skipDebug])
+
+  useEffect(() => {
+    if (!skipDebugEnabled || !stream?.skipDebug) {
+      return
+    }
+
+    console.debug('[AniFlow skip debug]', {
+      showId,
+      episodeNumber,
+      mediaDuration: duration,
+      raw: stream.skipDebug,
+      normalized: normalizedSkipDebug,
+    })
+  }, [duration, episodeNumber, normalizedSkipDebug, showId, skipDebugEnabled, stream?.skipDebug])
 
   const requestPlaybackRefresh = (shouldResumePlayback: boolean) => {
     const now = Date.now()
@@ -283,7 +325,7 @@ export function PlayerPage() {
     lastLocalProgressSecondRef.current = -1
 
     void api
-      .resolvePlayback({ showId, episodeNumber, translationType })
+      .resolvePlayback({ showId, episodeNumber, translationType, debugSkip: skipDebugEnabled })
       .then((resolved) => {
         if (!active) {
           return
@@ -304,7 +346,7 @@ export function PlayerPage() {
     return () => {
       active = false
     }
-  }, [episodeNumber, password, playbackRefreshToken, showId, translationType])
+  }, [episodeNumber, password, playbackRefreshToken, showId, skipDebugEnabled, translationType])
 
   useEffect(() => {
     const api = createApi(password)
@@ -372,11 +414,21 @@ export function PlayerPage() {
   }, [episodeNumber, password, showId, translationType])
 
   useEffect(() => {
-    setSelectedQualityId(stream?.qualities[0]?.id ?? null)
+    setSelectedQualityId((previous) => {
+      if (!stream) {
+        return null
+      }
+
+      if (previous && stream.qualities.some((quality) => quality.id === previous)) {
+        return previous
+      }
+
+      return stream.qualities[0]?.id ?? null
+    })
     setAvailableTextTrackCount(0)
     setCaptionsEnabled(true)
     setVideoReady(false)
-  }, [stream])
+  }, [streamConfigurationKey])
 
   useEffect(() => {
     const video = videoRef.current
@@ -416,7 +468,7 @@ export function PlayerPage() {
       video.removeEventListener('canplay', syncReadyState)
       cleanup()
     }
-  }, [activeQuality?.proxyUrl, resumeAt, stream])
+  }, [activeQuality?.proxyUrl, resumeAt, stream?.episodeNumber, stream?.mimeType, stream?.showId, stream?.streamUrl, stream?.translationType])
 
   useEffect(() => {
     const previewVideo = previewVideoRef.current
@@ -456,7 +508,7 @@ export function PlayerPage() {
       previewVideo.removeEventListener('seeked', handleSeeked)
       cleanup()
     }
-  }, [activeQuality?.proxyUrl, stream])
+  }, [activeQuality?.proxyUrl, stream?.episodeNumber, stream?.showId, stream?.streamUrl, stream?.translationType])
 
   useEffect(() => {
     const video = videoRef.current
@@ -684,7 +736,7 @@ export function PlayerPage() {
         textTracks.removeEventListener('removetrack', syncAvailability)
       }
     }
-  }, [activeQuality?.proxyUrl, captionsEnabled, stream])
+  }, [activeQuality?.proxyUrl, captionsEnabled, stream?.episodeNumber, stream?.showId, stream?.subtitleUrl, stream?.translationType])
 
   useEffect(() => {
     if (!settingsOpen) {
@@ -898,7 +950,7 @@ export function PlayerPage() {
     const safeDuration = Number.isFinite(video.duration) ? video.duration : duration
     const boundedTime = Math.min(Math.max(nextTime, 0), safeDuration || Math.max(nextTime, 0))
     const targetSegment =
-      stream?.skipSegments.find(
+      resolvedSkipSegments.find(
         (segment) => boundedTime >= Math.max(0, segment.startTime - 2) && boundedTime < segment.endTime,
       ) ?? null
     video.currentTime = boundedTime
@@ -1111,6 +1163,16 @@ export function PlayerPage() {
     handlePointerActivity()
   }
 
+  const toggleSkipDebug = () => {
+    playbackRefreshInFlightRef.current = true
+    setSkipDebugEnabled((previous) => {
+      const nextValue = !previous
+      writeStoredSkipDebugPreference(nextValue)
+      return nextValue
+    })
+    handlePointerActivity()
+  }
+
   const handlePlayerKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement
     if (target.closest('button, a, input')) {
@@ -1203,6 +1265,53 @@ export function PlayerPage() {
                 <span>{error}</span>
               </div>
             </div>
+          ) : null}
+
+          {skipDebugEnabled && stream?.skipDebug ? (
+            <aside className="player-skip-debug-panel" aria-label="Skip debug">
+              <div className="player-skip-debug-head">
+                <strong>Skip debug</strong>
+                <span>{stream.skipDebug.source}</span>
+              </div>
+              <div className="player-skip-debug-grid">
+                <div>
+                  <span className="player-skip-debug-label">Media duration</span>
+                  <code>{duration > 0 ? `${duration.toFixed(2)}s` : 'unknown'}</code>
+                </div>
+                <div>
+                  <span className="player-skip-debug-label">Current time</span>
+                  <code>{currentTime.toFixed(2)}s</code>
+                </div>
+                <div>
+                  <span className="player-skip-debug-label">Fallback</span>
+                  <code>{stream.skipDebug.usedLocalFallback ? 'used' : 'not used'}</code>
+                </div>
+                <div>
+                  <span className="player-skip-debug-label">Missing AniSkip</span>
+                  <code>{stream.skipDebug.missingAniSkipLabels.join(', ') || 'none'}</code>
+                </div>
+              </div>
+              <div className="player-skip-debug-section">
+                <span className="player-skip-debug-label">Lookup titles</span>
+                <code>{stream.skipDebug.lookupTitles.join(' | ')}</code>
+              </div>
+              <div className="player-skip-debug-section">
+                <span className="player-skip-debug-label">AniSkip raw</span>
+                <pre>{formatSkipDebugSegments(stream.skipDebug.rawAniSkipSegments)}</pre>
+              </div>
+              <div className="player-skip-debug-section">
+                <span className="player-skip-debug-label">Local raw</span>
+                <pre>{formatSkipDebugSegments(stream.skipDebug.rawLocalSegments)}</pre>
+              </div>
+              <div className="player-skip-debug-section">
+                <span className="player-skip-debug-label">Merged raw</span>
+                <pre>{formatSkipDebugSegments(stream.skipDebug.mergedSegments)}</pre>
+              </div>
+              <div className="player-skip-debug-section">
+                <span className="player-skip-debug-label">Normalized</span>
+                <pre>{formatSkipDebugSegments(normalizedSkipDebug?.mergedSegments ?? [])}</pre>
+              </div>
+            </aside>
           ) : null}
 
           <div className="player-overlay player-overlay-top">
@@ -1523,6 +1632,18 @@ export function PlayerPage() {
                           <span>{autoSkipSegmentsEnabled ? 'On' : 'Off'}</span>
                         </button>
                         <button
+                          aria-pressed={skipDebugEnabled}
+                          className={`player-settings-row ${skipDebugEnabled ? 'active' : ''}`}
+                          type="button"
+                          onClick={toggleSkipDebug}
+                        >
+                          <span className="player-settings-row-main">
+                            <Bug size={16} strokeWidth={1.8} />
+                            Skip debug
+                          </span>
+                          <span>{skipDebugEnabled ? 'On' : 'Off'}</span>
+                        </button>
+                        <button
                           aria-pressed={isInPictureInPicture}
                           className={`player-settings-row ${isInPictureInPicture ? 'active' : ''}`}
                           disabled={!pictureInPictureSupported}
@@ -1536,6 +1657,7 @@ export function PlayerPage() {
                           <span>{isInPictureInPicture ? 'On' : 'Off'}</span>
                         </button>
                       </div>
+
                     </div>
                   ) : null}
                 </div>
@@ -1788,16 +1910,36 @@ function normalizeSkipSegmentsForDuration(
     return segments
   }
 
-  const sourceDuration = segments.reduce((max, segment) => Math.max(max, segment.endTime), 0)
-  const scale = sourceDuration > duration ? duration / sourceDuration : 1
+  return segments
+    .map((segment) => {
+      const normalizedLabel = segment.label.toLowerCase()
+      const segmentDuration = Math.max(segment.endTime - segment.startTime, 0)
+
+      if (normalizedLabel.includes('outro') && segment.startTime >= duration && segment.endTime > duration) {
+        return {
+          ...segment,
+          startTime: clamp(duration - Math.min(segmentDuration, duration), 0, duration),
+          endTime: duration,
+        }
+      }
+
+      return {
+        ...segment,
+        startTime: clamp(segment.startTime, 0, duration),
+        endTime: clamp(segment.endTime, 0, duration),
+      }
+    })
+    .filter((segment) => segment.endTime > segment.startTime)
+}
+
+function formatSkipDebugSegments(segments: Array<{ label: string; startTime: number; endTime: number }>) {
+  if (segments.length === 0) {
+    return 'none'
+  }
 
   return segments
-    .map((segment) => ({
-      ...segment,
-      startTime: clamp(segment.startTime * scale, 0, duration),
-      endTime: clamp(segment.endTime * scale, 0, duration),
-    }))
-    .filter((segment) => segment.endTime > segment.startTime)
+    .map((segment) => `${segment.label}: ${segment.startTime.toFixed(2)}-${segment.endTime.toFixed(2)}`)
+    .join('\n')
 }
 
 function getSkipPromptCountdown(
